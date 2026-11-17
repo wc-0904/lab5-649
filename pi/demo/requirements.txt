@@ -1,0 +1,2 @@
+# Needed only for GPIO markers; --no-gpio functional checks use the standard library.
+gpiod>=2.2,<3

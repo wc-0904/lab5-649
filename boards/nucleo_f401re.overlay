@@ -1,0 +1,108 @@
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/ {
+	chosen {
+		zephyr,canbus = &can_a;
+	};
+
+	aliases {
+		can-a = &can_a;
+		can-b = &can_b;
+		/delete-property/ led0;
+		/delete-property/ pwm-led0;
+	};
+};
+
+/* PB6 belongs to CAN A chip select; console remains on USART2. */
+&usart1 {
+	status = "disabled";
+};
+
+/* PA5 belongs to SPI1 SCK; do not configure it as an LED or PWM output. */
+&green_led_2 {
+	status = "disabled";
+};
+
+&green_pwm_led {
+	status = "disabled";
+};
+
+&timers2 {
+	status = "okay";
+};
+
+&pwm2 {
+	status = "okay";
+	pinctrl-0 = <&tim2_ch2_pa1>;
+	pinctrl-names = "default";
+};
+
+&spi2 {
+	status = "disabled";
+};
+
+&spi1 {
+	status = "okay";
+	pinctrl-0 = <&spi1_sck_pa5 &spi1_miso_pa6 &spi1_mosi_pa7>;
+	pinctrl-names = "default";
+	cs-gpios = <&gpiob 6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>,
+		   <&gpioc 7 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+
+	can_a: can@0 {
+		compatible = "microchip,mcp2515";
+		reg = <0>;
+		/* Requested ceiling; STM32 SPI1 divides 84 MHz to 2.625 MHz. */
+		spi-max-frequency = <4000000>;
+		osc-freq = <16000000>;
+		bitrate = <500000>;
+		int-gpios = <&gpioa 10 GPIO_ACTIVE_LOW>;
+		status = "okay";
+
+		can-transceiver {
+			max-bitrate = <1000000>;
+		};
+	};
+
+	can_b: can@1 {
+		compatible = "microchip,mcp2515";
+		reg = <1>;
+		spi-max-frequency = <4000000>;
+		osc-freq = <16000000>;
+		bitrate = <500000>;
+		int-gpios = <&gpiob 5 GPIO_ACTIVE_LOW>;
+		status = "okay";
+
+		can-transceiver {
+			max-bitrate = <1000000>;
+		};
+	};
+};
+
+/*
+ * Lab 5 outputs live on GPIOA and GPIOB as well as GPIOC, so state all three
+ * explicitly rather than relying on the devicetree default.
+ */
+&gpioa {
+	status = "okay";
+};
+
+&gpiob {
+	status = "okay";
+};
+
+&gpioc {
+	status = "okay";
+};
+
+/* Free trace PC9 and use the independent watchdog. */
+&i2c3 {
+	status = "disabled";
+};
+
+&wwdg {
+	status = "disabled";
+};
+
+&iwdg {
+	status = "okay";
+};

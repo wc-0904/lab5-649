@@ -1,0 +1,6 @@
+# Add this block ONCE at the end of /boot/firmware/config.txt (older OS: /boot/config.txt).
+# Remove conflicting SPI0/CAN overlays first. Do not overwrite the rest of that file.
+[all]
+dtparam=spi=on
+dtoverlay=mcp2515-can0,oscillator=16000000,interrupt=25,spimaxfrequency=4000000
+dtoverlay=mcp2515-can1,oscillator=16000000,interrupt=24,spimaxfrequency=4000000

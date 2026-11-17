@@ -1,0 +1,11 @@
+# Zephyr build trees and caches
+build*/
+.cache/
+
+# Python
+__pycache__/
+*.pyc
+pi/.venv/
+
+# Measurement output
+*.csv

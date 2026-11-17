@@ -1,0 +1,332 @@
+#!/usr/bin/env python3
+"""Lab 3 cockpit: UDP, parallel CAN, blinker master, health and timing markers."""
+import argparse
+import csv
+import errno
+from pathlib import Path
+import selectors
+import socket
+import struct
+import sys
+import time
+
+from protocol import (CTRL, FAULT, HB1, HB2, HB3, BLINK, FORCE, CATALOG, FAULT_IDS,
+                      CAN_FRAME, Dedup, payload, valid, decode_wheel, origin)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "part0"))
+from can_check import discover
+
+
+def catalog_filters():
+    """Subscribe to exact standard data IDs, excluding extended and RTR frames."""
+    # CAN_EFF_FLAG | CAN_RTR_FLAG | CAN_SFF_MASK. CAN_ERR_FLAG must stay clear:
+    # Linux treats a mask containing it as an error subscription, not a data filter.
+    return b"".join(struct.pack("=II", can_id, 0xC00007FF) for can_id in CATALOG)
+
+
+class Pins:
+    """GPIO ownership via libgpiod v2, with explicit non-measuring opt-out."""
+    OFFSETS = (23, 22, 17, 27, 5, 6)  # UDP, CMD, TX_A, TX_B, DEG_A, DEG_B
+
+    def __init__(self, disabled):
+        self.request = None
+        self.level = [False] * 6
+        if not disabled:
+            import gpiod
+            from gpiod.line import Direction, Value
+            self.value = Value
+            self.request = gpiod.request_lines(
+                "/dev/gpiochip0", consumer="lab3-cockpit",
+                config={pin: gpiod.LineSettings(direction=Direction.OUTPUT,
+                                                output_value=Value.INACTIVE)
+                        for pin in self.OFFSETS})
+
+    def set(self, pin, level):
+        """Set one marker/LED."""
+        self.level[pin] = bool(level)
+        if self.request:
+            self.request.set_value(self.OFFSETS[pin],
+                                   self.value.ACTIVE if level else self.value.INACTIVE)
+
+    def toggle(self, pin):
+        """Toggle marker on an observed event."""
+        self.set(pin, not self.level[pin])
+
+    def close(self):
+        """Release GPIO handles."""
+        if self.request:
+            self.request.release()
+
+
+class Cockpit:
+    """One event loop implements the Pi logical tasks; Linux latency is measured."""
+    def __init__(self, args):
+        self.args = args
+        self.pins = Pins(args.no_gpio)
+        self.selector = selectors.DefaultSelector()
+        self.can = []
+        for bus, name in discover().items():
+            sock = socket.socket(socket.PF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
+            sock.setsockopt(socket.SOL_CAN_RAW, socket.CAN_RAW_FILTER, catalog_filters())
+            sock.setblocking(False)
+            sock.bind((name,))
+            self.selector.register(sock, selectors.EVENT_READ, len(self.can))
+            self.can.append(sock)
+        self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp.setblocking(False)
+        self.udp.bind((args.bind, args.port))
+        self.selector.register(self.udp, selectors.EVENT_READ, "udp")
+        self.sequence = {can_id: 0 for can_id in CATALOG}
+        self.dedup = Dedup()
+        self.heartbeat = [[float("-inf")] * 2 for _ in range(3)]
+        self.fault_at = [float("-inf")] * 3
+        self.local_fail = False
+        self.error = True
+        self.degraded = [True, True]
+        self.last_udp = float("-inf")
+        self.last_wheel_sequence = None
+        self.command = None
+        self.last_ctrl_tx = float("-inf")
+        self.pending_command = None
+        self.last_blink = float("-inf")
+        self.last_fault = float("-inf")
+        self.blink_state = 0
+        self.desired_blink = 0
+        self.phase = 0
+        self.next_edge = time.monotonic()
+        self.button_previous = 0
+        self.recovery_press = None
+        self.force = 0
+        self.remote = None
+        self.samples = []
+        self.sample_overflow = 0
+        self.send_errors = [0, 0]
+        self.bad_frames = 0
+        self.inject = args.inject_invalid
+        self.forwarded = [0, 0]
+
+    def write_bus(self, bus, frame):
+        """One nonblocking SocketCAN write; failure never stalls the other bus."""
+        self.pins.toggle(2 + bus)
+        try:
+            self.can[bus].send(frame)
+            return True
+        except OSError as error:
+            if error.errno not in (errno.ENOBUFS, errno.ENETDOWN, errno.EAGAIN,
+                                  errno.ENETUNREACH, errno.EIO):
+                raise
+            self.send_errors[bus] += 1
+            return False
+
+    def send(self, can_id, body=b""):
+        """Originate identical copies with one sequence increment."""
+        data = payload(can_id, self.sequence[can_id], body)
+        self.sequence[can_id] = (self.sequence[can_id] + 1) & 15
+        frame = CAN_FRAME.pack(can_id, 8, data)
+        return sum(self.write_bus(bus, frame) for bus in (0, 1))
+
+    def forward(self, can_id, data, ingress):
+        """Relay a validated first copy unchanged to the opposite interface.
+
+        Runs in the selector event loop, so Linux scheduling/queue delays remain
+        measured inputs. No userspace retry backlog is created after a failed send.
+        """
+        if self.local_fail:
+            return
+        destination = 1 - ingress
+        if self.write_bus(destination, CAN_FRAME.pack(can_id, 8, data)):
+            self.forwarded[destination] += 1
+
+    def fault(self, reason, now):
+        """Send one FAULT per local failure episode; stop heartbeats until recovery."""
+        if self.local_fail:
+            return
+        self.recovery_press = None
+        self.local_fail = True
+        self.error = True
+        if now - self.last_fault >= .020:
+            self.send(FAULT, bytes((1, reason)))
+            self.last_fault = now
+
+    def test_press(self, now):
+        """Single press fails; two subsequent presses within 500 ms recover."""
+        if not self.local_fail:
+            self.fault(1, now)
+        elif self.recovery_press is not None and now - self.recovery_press <= .500:
+            self.local_fail = False
+            self.recovery_press = None
+            self.pending_command = None
+            # monitor() still requires fresh input and both peers before clearing error.
+        else:
+            self.recovery_press = now
+
+    def udp_rx(self, now):
+        """Validate one wheel update and retain the latest command."""
+        raw, remote = self.udp.recvfrom(2048)
+        received_ns = time.monotonic_ns()
+        self.pins.toggle(0)
+        try:
+            sequence, steer, throttle, brake, buttons = decode_wheel(raw)
+        except ValueError:
+            self.fault(2, now)
+            return
+        if self.last_wheel_sequence is not None and now - self.last_udp < .060:
+            delta = (sequence - self.last_wheel_sequence) & 0xFFFFFFFF
+            if delta == 0 or delta >= 0x80000000:
+                return
+        self.last_wheel_sequence = sequence
+        self.last_udp = now
+        self.remote = remote
+        if buttons & 8 and not self.button_previous & 8:
+            self.test_press(now)
+        # Rising edges toggle left/right request; both buttons request hazards.
+        rising = buttons & ~self.button_previous
+        if rising & 0x30 == 0x30:
+            self.desired_blink = 0 if self.desired_blink == 3 else 3
+        elif rising & 0x20:
+            self.desired_blink = 0 if self.desired_blink == 1 else 1
+        elif rising & 0x10:
+            self.desired_blink = 0 if self.desired_blink == 2 else 2
+        self.button_previous = buttons
+        if self.inject:
+            throttle = 101  # Valid CRC, invalid semantic range.
+            self.inject = False
+        self.pending_command = (struct.pack("<hBBBB", steer, throttle, brake, buttons, 0),
+                                received_ns)
+
+    def ctrl_tx(self, now):
+        """Publish at minimum 20 ms spacing; record UDP dequeue-to-write latency."""
+        if self.local_fail or self.pending_command is None or now - self.last_ctrl_tx < .020:
+            return
+        body, received_ns = self.pending_command
+        self.pending_command = None
+        data = payload(CTRL, self.sequence[CTRL], body)
+        self.sequence[CTRL] = (self.sequence[CTRL] + 1) & 15
+        frame = CAN_FRAME.pack(CTRL, 8, data)
+        first_ok = self.write_bus(0, frame)
+        self.pins.toggle(1)
+        elapsed = (time.monotonic_ns() - received_ns) / 1000
+        self.write_bus(1, frame)
+        sent = int(first_ok)
+        if len(self.samples) < 200000:
+            self.samples.append((received_ns, elapsed, sent))
+        else:
+            self.sample_overflow += 1
+        self.last_ctrl_tx = now
+
+    def receive(self, bus, now):
+        """Record per-bus reachability, suppress copies, and bridge foreign traffic."""
+        raw = self.can[bus].recv(16)
+        if len(raw) != 16:
+            self.bad_frames += 1
+            return
+        can_id, length, data = CAN_FRAME.unpack(raw)
+        if length != 8 or not valid(can_id, data):
+            self.bad_frames += 1
+            return
+        if origin(can_id, data) == 1:
+            return  # Returning copies of our own traffic must never be relayed.
+        if can_id in (HB2, HB3):
+            self.heartbeat[can_id - HB1][bus] = now
+        if self.dedup.duplicate(can_id, data, bus, now):
+            return
+        self.forward(can_id, data, bus)
+        if can_id in FAULT_IDS:
+            self.fault_at[data[1] - 1] = now
+            self.error = True
+        elif can_id == FORCE:
+            self.force = struct.unpack("b", data[1:2])[0]
+            if self.remote and self.args.force_port:
+                # Optional diagnostic feedback: one signed byte to explicit port.
+                try:
+                    self.udp.sendto(data[1:2], (self.remote[0], self.args.force_port))
+                except OSError:
+                    pass
+
+    def monitor(self, now):
+        """20 ms health poll; single-bus degradation does not imply zone failure."""
+        self.degraded = [any(now - self.heartbeat[p][b] >= .040 for p in (1, 2))
+                         for b in (0, 1)]
+        peer_failed = any(now - max(self.heartbeat[p]) >= .060 or
+                          max(self.heartbeat[p]) <= self.fault_at[p] for p in (1, 2))
+        self.error = self.local_fail or now - self.last_udp >= .060 or peer_failed
+        for bus in (0, 1):
+            self.pins.set(4 + bus, self.degraded[bus])
+
+    def blink_tx(self, now):
+        """Master normal edges at 500 ms, fault hazard edges at 250 ms."""
+        desired = 3 if self.error else self.desired_blink
+        if now - self.last_blink < .020:
+            return
+        changed = desired != self.blink_state
+        if not changed and now < self.next_edge:
+            return
+        self.blink_state = desired
+        self.phase = 1 if changed else self.phase ^ 1
+        self.send(BLINK, bytes((desired, self.phase)))
+        self.last_blink = now
+        self.next_edge = now + (.250 if self.error else .500)
+
+    def run(self):
+        """Service critical CTRL first, then bounded socket batches and timers."""
+        started = time.monotonic()
+        next_hb = next_monitor = started
+        try:
+            while not self.args.duration or time.monotonic() - started < self.args.duration:
+                for key, _ in self.selector.select(.001):
+                    now = time.monotonic()
+                    if key.data == "udp":
+                        self.udp_rx(now)
+                    else:
+                        self.receive(key.data, now)
+                    self.ctrl_tx(time.monotonic())
+                now = time.monotonic()
+                self.ctrl_tx(now)
+                if now >= next_monitor:
+                    self.monitor(now)
+                    next_monitor = now + .020
+                if now >= next_hb:
+                    if not self.local_fail:
+                        health = int(not self.degraded[0]) | (int(not self.degraded[1]) << 1)
+                        self.send(HB1, bytes((int(self.error), health)))
+                    next_hb = now + .020
+                self.blink_tx(now)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            self.pins.close()
+            self.selector.close()
+            for sock in [*self.can, self.udp]:
+                sock.close()
+            if self.args.csv:
+                with open(self.args.csv, "w", newline="") as output:
+                    writer = csv.writer(output)
+                    writer.writerow(("udp_dequeue_monotonic_ns", "first_can_write_elapsed_us",
+                                     "first_can_write_succeeded"))
+                    writer.writerows(self.samples)
+            timings = sorted(row[1] for row in self.samples if row[2] > 0)
+            if timings:
+                print(f"UDP dequeue -> first CAN write: n={len(timings)} max={max(timings):.1f} us "
+                      f"p99={timings[min(len(timings)-1, int(len(timings)*.99))]:.1f} us")
+            print(f"CAN send errors A/B={self.send_errors}; malformed={self.bad_frames}; "
+                  f"sample overflow={self.sample_overflow}; dummy force={self.force}; relayed A/B={self.forwarded}")
+            print("These are observed elapsed times, not hard WCET or wire completion bounds.")
+
+
+def main():
+    """Parse command-line options and run the real SocketCAN cockpit."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bind", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--duration", type=float, default=0)
+    parser.add_argument("--csv", type=Path)
+    parser.add_argument("--no-gpio", action="store_true", help="functional check only; no scope markers")
+    parser.add_argument("--inject-invalid", action="store_true", help="next CTRL throttle=101, valid CRC")
+    parser.add_argument("--force-port", type=int, help="optional one-byte dummy FORCE reply UDP port")
+    args = parser.parse_args()
+    if args.duration < 0:
+        parser.error("duration must be nonnegative")
+    Cockpit(args).run()
+
+
+if __name__ == "__main__":
+    main()
