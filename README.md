@@ -46,6 +46,48 @@ Exit miniterm with Ctrl+]. Startup error/hazards until peers and fresh wheel inp
 arrive is expected. Periodic console output is disabled by default to avoid UART
 printing distorting the timing measurements.
 
+## Build and flash on WSL
+
+The Mac section above does not apply here. `setup.sh` expects the Mac layout and
+fails on WSL, where the Zephyr workspace and the SDK live in the home directory.
+Use `setup_win.sh`, which checks the venv, the Zephyr tree and the SDK before it
+changes anything and prints the versions it selected:
+
+```sh
+source ./setup_win.sh
+west build -b nucleo_f401re/stm32f401xe -d build-demo-n2 . -- -DLAB_NODE_ID=2
+west build -b nucleo_f401re/stm32f401xe -d build-demo-n3 . -- -DLAB_NODE_ID=3
+```
+
+WSL2 does not pass USB devices through on its own, so the ST-LINK is invisible
+until it is attached with `usbipd-win`. From an **elevated Windows PowerShell**:
+
+```powershell
+usbipd list                          # find the ST-LINK BUSID
+usbipd bind --busid <BUSID>          # once per device, needs administrator
+usbipd attach --wsl --busid <BUSID>  # again after every replug
+```
+
+Back in WSL, `lsusb` should list the ST-LINK and `/dev/ttyACM0` should appear.
+Attach one board at a time, which is also what the one-USB-at-a-time flashing
+rule above requires:
+
+```sh
+west flash -d build-demo-n2 --runner openocd --verify --skip-rebuild
+```
+
+Detach N2, attach N3, then flash `build-demo-n3` the same way. The console is at
+`/dev/ttyACM0`, not the `/dev/cu.usbmodem*` path the Mac section uses:
+
+```sh
+python -m serial.tools.list_ports
+python -m serial.tools.miniterm /dev/ttyACM0 115200
+```
+
+`60-openocd.rules` is already installed, so openocd should reach the probe
+without `sudo`. If it reports a permission error, the attach step was skipped or
+the rules did not apply to the newly attached device.
+
 ## Pi setup and functional run
 
 Edit the two existing MCP2515 overlay lines in `/boot/firmware/config.txt` to set
