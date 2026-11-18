@@ -30,8 +30,9 @@ directory is now about 1 MB. Things worth knowing before touching anything:
   decision.** Start there; the decision IDs D1 to D30 are referenced from the task rows.
 - **P1 of `TASKS.md` is implemented**, so this is no longer bare Lab 3 code. Added:
   `config/cluster.conf`, `tools/gen_config.py`, `pi/demo/cluster_config.py`, the
-  `enum lab5_id` catalog, five new GPIO outputs and a boot pin walk. Nothing has been
-  built or flashed yet.
+  `enum lab5_id` catalog, five new GPIO outputs and a boot pin walk. Built against
+  Zephyr 4.4.99 with SDK 1.0.1 and flashed to both Nucleos; both report
+  `Task startup: 0` and the same config hash.
 - **This is a git repository now**, initialised at P1. `lab3-649/.git` still holds the
   full pre-cleanup tree if anything removed earlier is wanted back.
 - **The project is `lab5_consensus`** and `setup.sh` uses `lab5_*` variables. The Lab 3

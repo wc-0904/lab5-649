@@ -44,11 +44,27 @@ the split. Otherwise run it straight through.
 | 0.2 | Settle **D1** to **D4**, **D12** and **D28**: node IDs, config distribution and format, CAN ID allocation, which bus carries Raft, new pins | Written down. Every later phase encodes these, and changing them later touches all three nodes |
 | 0.3 | Record each decision and its reasoning as it is made | The report's three sections are design arguments; capturing the reasoning now is cheaper than reconstructing it later |
 
-### P1. Foundations  [DONE 2026-11-17, not yet built or flashed]
+### P1. Foundations  [DONE, flashed and verified on both Nucleos 2026-11-18]
 
-All six items are implemented. The firmware has not been compiled or run on
-hardware; `lab_protocol.c` was compiled and executed natively as a cross-check,
-and the host tests pass, but neither establishes a working Zephyr build.
+All six items are implemented, built against Zephyr 4.4.99 with SDK 1.0.1, and
+flashed to both boards. Confirmed on hardware from the boot banner:
+
+- The generated config reaches both boards and `hash=825e3115` is identical on
+  each, so the byte-identical requirement holds in practice, not just in theory.
+- Identity resolves through the generated name table: node 2 reports `steering`,
+  node 3 reports `drivetrain`.
+- Per-node identifiers derive correctly and do not collide. N2 gets ACK 0x046,
+  REQ_VOTE 0x04a, VOTE 0x04e, CLIENT 0x052; N3 gets 0x047, 0x04b, 0x04f, 0x053;
+  REF 0x008, APPEND 0x040 and REDIRECT 0x054 are shared.
+- `Task startup: 0` on both. `lab_tasks_start()` returns early on any init
+  failure and calls `lab_io_init()` first, which configures all eighteen pins,
+  so zero proves PB12..PB15 and PA0 configure as outputs and that CAN init
+  accepted all nine filters, seven Lab 3 plus two Lab 5 masked, on both buses.
+
+Still unverified on the bench: the pin walk has not been observed on a scope,
+REF_RX has not been driven by a real REF frame, and no Lab 3 traffic regression
+test has been run since the dispatch and filter changes. Those need the Pi and
+the bus, not just USB.
 
 **Deviation from 1.5 as written.** `lab_slot()` and `lab_valid()` were *not*
 extended to the Lab 5 identifiers. `lab_slot()` indexes the Lab 3 dedup cache
