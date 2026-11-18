@@ -132,6 +132,19 @@ int lab_io_pwm(uint32_t period_ns, uint32_t pulse_ns)
  */
 void lab_io_selftest(uint32_t step_ms)
 {
+	/*
+	 * Configure the Lab 5 pins here rather than relying on lab_io_init(),
+	 * so the walk works when main() runs it before the task set starts.
+	 * Repeating the configuration after lab_io_init() is harmless.
+	 */
+	for (int pin = LAB_PIN_FIRST_LAB5; pin < LAB_PIN_COUNT; pin++) {
+		if (!device_is_ready(ports[pins[pin].port]) ||
+		    gpio_pin_configure(ports[pins[pin].port], pins[pin].pin,
+				       GPIO_OUTPUT_INACTIVE) != 0) {
+			atomic_set(&io_error, 1);
+			return;
+		}
+	}
 	for (int pass = 0; pass < 2; pass++) {
 		for (int pin = LAB_PIN_FIRST_LAB5; pin < LAB_PIN_COUNT; pin++) {
 			lab_io_set((enum lab_pin)pin, true);

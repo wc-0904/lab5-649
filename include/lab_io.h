@@ -42,8 +42,9 @@ void lab_io_toggle(enum lab_pin pin);
 int lab_io_pwm(uint32_t period_ns, uint32_t pulse_ns);
 /** @brief Walk the Lab 5 outputs one at a time so each can be identified.
  *
- * Blocking, intended for boot before the task set starts. Drives each new pin
- * high alone for @p step_ms, twice, then leaves every one of them low.
+ * Blocking, intended for boot before the task set starts. Configures the Lab 5
+ * pins itself, so it does not depend on lab_io_init() having run, then drives
+ * each one high alone for @p step_ms, twice, leaving all of them low.
  * @param step_ms Time each pin stays high, in milliseconds.
  */
 void lab_io_selftest(uint32_t step_ms);
