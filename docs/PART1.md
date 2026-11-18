@@ -122,5 +122,6 @@ or real-time task set.
 `src/can_bringup.c` owns startup and traffic, with state private to each controller.
 `CMakeLists.txt` selects LAB_NODE_ID (2 or 3; default 2). The same wiring/overlay
 applies to both boards. `pi/part1/check_traffic.py` validates four received streams.
-Historical Part 0 instructions are in docs/PART0.md, Lab 2 docs in docs/lab2/.
+Historical Part 0 instructions are in docs/PART0.md. The Lab 2 docs that were in
+docs/lab2/ were removed during the Lab 5 cleanup and remain in `lab3-649/`.
 Old actuator drivers and UART proxy remain unbuilt for later integration.

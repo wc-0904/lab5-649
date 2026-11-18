@@ -2,7 +2,8 @@
 
 Run these commands on the Pi from this repository's root. The kernel driver handles
 SPI and interrupts; no custom SPI program or python-can dependency is needed.
-Do not run the old `pi/proxy_receiver` for Part 0 (GPIO24 is now CAN B INT).
+Do not run the old `pi/proxy_receiver` (GPIO24 is now CAN B INT). It was removed
+from this directory during the Lab 5 cleanup and remains in `lab3-649/`.
 
 1. Power off before wiring both modules according to ../../WIRING.md.
    Leave all CANH/CANL terminals disconnected. Boot the Pi.

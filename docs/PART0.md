@@ -70,10 +70,11 @@ Do not run `cansend` until another node can acknowledge the frame in Part 1.
 - `src/can_bringup.c`, `include/can_bringup.h`: loopback and state diagnostics.
 - `boards/nucleo_f401re.overlay`: two SPI1 controllers, CS/INT pins, pin-conflict removal.
 - `pi/part0/`: Linux boot configuration snippet, verification helper, instructions.
-- `docs/lab2/`: historical operator/wiring/measurement documents.
+- `docs/lab2/`: historical operator/wiring/measurement documents. Removed from
+  this directory; recover from `lab3-649/docs/lab2/` if needed.
 
-Old Lab 2 driver sources and `pi/proxy_receiver` remain available for later integration,
-but are not built or run by Part 0. The template application, redundancy, relay, LEDs,
+Old Lab 2 driver sources and `pi/proxy_receiver` were removed from this directory
+during the Lab 5 cleanup and remain in `lab3-649/`. The template application, redundancy, relay, LEDs,
 watchdog and real-time analysis are later parts, not implemented here.
 
 For the guiding questions: the MCP2515 ISR gives a semaphore; a separate per-device

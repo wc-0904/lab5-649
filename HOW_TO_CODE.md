@@ -62,6 +62,7 @@ Use tabs for C indentation, `snake_case`, braces on separate lines for functions
 
 - `test_points.c/.h`: STM32 PC9 command-reception and PC11 right-motor timer-write markers.
 - `pi/proxy_receiver/trace_gpio.c/.h`: optional Pi GPIO23/24 timing markers.
+  Removed from this directory; see `lab3-649/` for it.
 
 - `main.c`: initializes drivers and starts speed PID, UART, blinkers, and encoder reporting.
 - `uart_receiver.c/.h`: USART1 interrupt, private packet queue, command worker, and start API. It sends speed requests to motor_controller, steering to servo, and enable states to blinker.
@@ -79,6 +80,7 @@ Use tabs for C indentation, `snake_case`, braces on separate lines for functions
 - `quadrature.c/.h`: pure transition decoder.
 - `wheel_info.h`: shared eight-byte wheel payload and measured wheel constants.
 - `pi/proxy_receiver/receiver.c/.h`: UDP-to-UART program and protocol constants.
+  Removed from this directory; see `lab3-649/` for it.
 
 Add new implementation files to `CMakeLists.txt`; adding a header alone does not compile its `.c` file. Keep generated `build/` files and the upstream Zephyr tree out of application refactors.
 
