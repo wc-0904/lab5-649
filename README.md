@@ -27,11 +27,13 @@ west build -b nucleo_f401re/stm32f401xe -d build-demo-n2 . -- -DLAB_NODE_ID=2
 west build -b nucleo_f401re/stm32f401xe -d build-demo-n3 . -- -DLAB_NODE_ID=3
 ```
 
-Connect **only N2's USB** for the first flash, then only N3's USB for the second:
+Connect **only N2's USB** for the first flash, then only N3's USB for the second.
+West renamed `--skip-rebuild` to `--no-rebuild`; older west versions want the old
+spelling, and the openocd runner rejects whichever one it does not know:
 
 ```sh
-west flash -d build-demo-n2 --runner openocd --verify --skip-rebuild
-west flash -d build-demo-n3 --runner openocd --verify --skip-rebuild
+west flash -d build-demo-n2 -r openocd --no-rebuild --verify
+west flash -d build-demo-n3 -r openocd --no-rebuild --verify
 ```
 
 Reconnect both. Console should report `Task startup: 0; relay node=2` on N2 (`relay node=3` on N3).
@@ -73,7 +75,7 @@ Attach one board at a time, which is also what the one-USB-at-a-time flashing
 rule above requires:
 
 ```sh
-west flash -d build-demo-n2 --runner openocd --verify --skip-rebuild
+west flash -d build-demo-n2 -r openocd --no-rebuild --verify
 ```
 
 Detach N2, attach N3, then flash `build-demo-n3` the same way. The console is at
@@ -143,7 +145,7 @@ Task indices: 0 dispatch, 1 STEER/DRIVE, 2 blink, 3 test/fault, 4 PID, 5 HB_TX,
 
 ```sh
 west build -b nucleo_f401re/stm32f401xe -d build-demo-n3 . -- -DLAB_NODE_ID=3 -DLAB_TRACE_TASK=4
-west flash -d build-demo-n3 --runner openocd --verify --skip-rebuild
+west flash -d build-demo-n3 -r openocd --no-rebuild --verify
 ```
 
 PC11 goes high during the selected body. This includes preemption and waiting.
