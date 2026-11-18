@@ -1,7 +1,7 @@
 # Lab 3 Part 0: dual MCP2515 bring-up
 
 Two Nucleo-F401REs and a Raspberry Pi 4B each use two XIAO CAN modules with **16 MHz
-crystals**. Wire each host to its modules using [WIRING.md](WIRING.md). Leave CANH/CANL
+crystals**. Wire each host to its modules using [WIRING.md](../WIRING.md). Leave CANH/CANL
 disconnected between nodes. No wheel, motor, sensor, or UART forwarder is needed.
 
 ## Firmware behavior
@@ -50,7 +50,7 @@ Build/cache outputs stay under this application directory.
 
 ## Raspberry Pi
 
-Pull this revision on the Pi, then follow [pi/part0/README.md](pi/part0/README.md).
+Pull this revision on the Pi, then follow [pi/part0/README.md](../pi/part0/README.md).
 It includes boot overlay settings and the inspection/up/check commands. No Python
 packages are required beyond Python 3. The script verifies real MCP2515 devices
 and maps A/B by SPI chip select rather than assuming Linux probe order.
