@@ -70,6 +70,27 @@ usbipd bind --busid <BUSID>          # once per device, needs administrator
 usbipd attach --wsl --busid <BUSID>  # again after every replug
 ```
 
+### Flashing the right board when both are attached
+
+`west flash -i <serial>` does **not** select the adapter: openocd matches a serial
+string that does not correspond to what `pyserial` prints, and on a failed match it
+silently falls back to the first adapter instead of erroring. Select by USB topology
+instead, which openocd matches directly:
+
+```sh
+python -m serial.tools.list_ports -v        # read LOCATION=<bus>-<port> for each board
+west flash -d build-demo-n2 -r openocd --no-rebuild --verify \
+  --cmd-pre-init-flash "adapter usb location 1-1"
+west flash -d build-demo-n3 -r openocd --no-rebuild --verify \
+  --cmd-pre-init-flash "adapter usb location 1-2"
+```
+
+openocd echoes `adapter usb location: 1-1` when the selection takes. Confirm the two
+flashes report **different** verify sizes, since the images differ by node: N2 is
+about 66.5 KB and N3 about 67.2 KB. Identical sizes mean the same board was
+programmed twice. Locations change when cables are moved between ports, so re-read
+them rather than reusing old values.
+
 Back in WSL, `lsusb` should list the ST-LINK and `/dev/ttyACM0` should appear.
 Attach one board at a time, which is also what the one-USB-at-a-time flashing
 rule above requires:

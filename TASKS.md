@@ -146,9 +146,11 @@ every heartbeat, peer-tracking and degraded result would be garbage until fixed.
 
 **`west flash -i <serial>` does not select the adapter here.** openocd matches a
 serial string that does not correspond to what `pyserial` prints, and on a failed
-match it silently falls back to the first adapter instead of erroring. Do not
-rely on it. Attach **one board at a time** with `usbipd` and run one flash
-command, then verify the banner before touching the other.
+match it silently falls back to the first adapter instead of erroring. Select by
+USB topology instead, which works with both boards attached:
+`--cmd-pre-init-flash "adapter usb location <bus>-<port>"`, reading the location
+from `python -m serial.tools.list_ports -v`. See README.md. Confirm the two
+flashes report different verify sizes.
 
 Recovery, one board attached at a time:
 
