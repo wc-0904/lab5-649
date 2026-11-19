@@ -300,6 +300,20 @@ void lab_can_send(uint16_t id, uint8_t data[8])
 	(void)enqueue(&frame, 1, origin, false);
 }
 
+/** @brief Send a Lab 5 frame onto both buses with the payload untouched.
+ * @param id Lab 5 identifier from enum lab5_id.
+ * @param data Eight bytes, sent exactly as given.
+ */
+void lab_can_send_lab5(uint16_t id, const uint8_t data[8])
+{
+	struct can_frame frame = {.id = id, .dlc = 8};
+	int64_t origin = k_uptime_get();
+
+	memcpy(frame.data, data, 8);
+	(void)enqueue(&frame, 0, origin, false);
+	(void)enqueue(&frame, 1, origin, false);
+}
+
 /** @brief Forward unchanged bytes; never allocate a new sequence or recompute CRC.
  * @param frame Received frame.
  * @param bus Opposite bus index.

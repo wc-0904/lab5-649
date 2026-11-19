@@ -51,5 +51,6 @@ target_sources(app PRIVATE
   src/lab_io.c
   src/lab_can.c
   src/lab_tasks.c
+  src/raft_agent.c
 )
 target_include_directories(app PRIVATE include "${CMAKE_CURRENT_BINARY_DIR}/lab5_generated")

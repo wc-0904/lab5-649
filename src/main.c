@@ -6,6 +6,7 @@
 #include "lab_io.h"
 #include "lab_protocol.h"
 #include "lab_tasks.h"
+#include "raft_agent.h"
 #include <zephyr/sys/printk.h>
 
 /** @brief Milliseconds each Lab 5 output is held high during the boot pin walk. */
@@ -48,6 +49,9 @@ int main(void)
 #endif
 	int rc = lab_tasks_start();
 
+	printk("raft    term=%u role=%s leader=%s synced=%d\n", raft_term(),
+	       raft_role() == RAFT_LEADER ? "LEADER" : "FOLLOWER",
+	       lab_node_name(raft_leader()), (int)raft_synced());
 	printk("Measurement mode: %d (0 = normal)\n", LAB_MEASURE_MODE);
 	printk("Task startup: %d; relay node=%d\n", rc, LAB_NODE_ID);
 	return rc;

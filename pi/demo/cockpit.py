@@ -14,6 +14,8 @@ from protocol import (CTRL, FAULT, HB1, HB2, HB3, BLINK, FORCE, CATALOG, FAULT_I
                       CAN_FRAME, Dedup, payload, valid, decode_wheel, origin)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "part0"))
 from can_check import discover
+from cluster_config import load as load_cluster_config, node_id as cluster_node_id
+from raft_agent import RaftAgent
 
 
 def catalog_filters():
@@ -71,6 +73,13 @@ class Cockpit:
             sock.bind((name,))
             self.selector.register(sock, selectors.EVENT_READ, len(self.can))
             self.can.append(sock)
+        self.cluster = load_cluster_config()
+        self.agent = RaftAgent(self.cluster, cluster_node_id(self.cluster, args.node),
+                               self.send_lab5)
+        print("config  hash=%s N=%d majority=%d leader=%s"
+              % (self.cluster["hash"], self.cluster["N"], self.cluster["majority"],
+                 self.cluster["default_leader"]), flush=True)
+        print(self.agent.summary(), flush=True)
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp.setblocking(False)
         self.udp.bind((args.bind, args.port))
@@ -123,6 +132,18 @@ class Cockpit:
         self.sequence[can_id] = (self.sequence[can_id] + 1) & 15
         frame = CAN_FRAME.pack(can_id, 8, data)
         return sum(self.write_bus(bus, frame) for bus in (0, 1))
+
+    def send_lab5(self, can_id, data):
+        """Send a Lab 5 frame on both buses with the payload untouched.
+
+        send() stamps a Lab 3 sequence number into byte zero; consensus and time
+        frames use all eight bytes, so they bypass it.
+        :param can_id: Lab 5 identifier.
+        :param data: Eight bytes, sent exactly as given.
+        """
+        frame = CAN_FRAME.pack(can_id, 8, data)
+        for bus in (0, 1):
+            self.write_bus(bus, frame)
 
     def forward(self, can_id, data, ingress):
         """Relay a validated first copy unchanged to the opposite interface.
@@ -290,6 +311,8 @@ class Cockpit:
                         self.send(HB1, bytes((int(self.error), health)))
                     next_hb = now + .020
                 self.blink_tx(now)
+                self.agent.ref_tx(now)
+                self.agent.append_tx(now)
         except KeyboardInterrupt:
             pass
         finally:
@@ -307,6 +330,7 @@ class Cockpit:
             if timings:
                 print(f"UDP dequeue -> first CAN write: n={len(timings)} max={max(timings):.1f} us "
                       f"p99={timings[min(len(timings)-1, int(len(timings)*.99))]:.1f} us")
+            print(self.agent.summary())
             print(f"CAN send errors A/B={self.send_errors}; malformed={self.bad_frames}; "
                   f"sample overflow={self.sample_overflow}; dummy force={self.force}; relayed A/B={self.forwarded}")
             print("These are observed elapsed times, not hard WCET or wire completion bounds.")
@@ -315,6 +339,7 @@ class Cockpit:
 def main():
     """Parse command-line options and run the real SocketCAN cockpit."""
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--node", default="cockpit", help="this node's ID in cluster.conf")
     parser.add_argument("--bind", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--duration", type=float, default=0)

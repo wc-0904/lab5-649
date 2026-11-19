@@ -96,6 +96,71 @@ bool lab_valid(uint32_t id, const uint8_t data[8])
 	return true;
 }
 
+/** @brief Encode a REF payload.
+ * @param data Eight bytes to fill.
+ * @param master_us Leader clock in microseconds; only the low 48 bits travel.
+ * @param cycle Cycle counter, wrapping at 16 bits.
+ */
+void lab5_ref_encode(uint8_t data[8], uint64_t master_us, uint16_t cycle)
+{
+	uint64_t clock = master_us & LAB5_REF_US_MAX;
+
+	for (int i = 0; i < 6; i++) {
+		data[i] = (uint8_t)(clock >> (8 * i));
+	}
+	data[6] = (uint8_t)cycle;
+	data[7] = (uint8_t)(cycle >> 8);
+}
+
+/** @brief Decode a REF payload.
+ * @param data Eight received bytes.
+ * @return Master clock and cycle counter.
+ */
+struct lab5_ref lab5_ref_decode(const uint8_t data[8])
+{
+	struct lab5_ref ref = {.master_us = 0, .cycle = 0};
+
+	for (int i = 0; i < 6; i++) {
+		ref.master_us |= (uint64_t)data[i] << (8 * i);
+	}
+	ref.cycle = (uint16_t)((uint16_t)data[6] | ((uint16_t)data[7] << 8));
+	return ref;
+}
+
+/** @brief Encode an AppendEntries header.
+ * @param data Eight bytes to fill.
+ * @param header Fields to encode; count zero means an empty append.
+ */
+void lab5_append_encode(uint8_t data[8], const struct lab5_append *header)
+{
+	data[0] = header->term;
+	data[1] = (uint8_t)header->prev_index;
+	data[2] = (uint8_t)(header->prev_index >> 8);
+	data[3] = header->prev_term;
+	data[4] = (uint8_t)header->commit;
+	data[5] = (uint8_t)(header->commit >> 8);
+	data[6] = header->count;
+	data[7] = header->event;
+}
+
+/** @brief Decode an AppendEntries header.
+ * @param data Eight received bytes.
+ * @return Decoded fields.
+ */
+struct lab5_append lab5_append_decode(const uint8_t data[8])
+{
+	struct lab5_append header = {
+		.term = data[0],
+		.prev_index = (uint16_t)((uint16_t)data[1] | ((uint16_t)data[2] << 8)),
+		.prev_term = data[3],
+		.commit = (uint16_t)((uint16_t)data[4] | ((uint16_t)data[5] << 8)),
+		.count = data[6],
+		.event = data[7],
+	};
+
+	return header;
+}
+
 /** @brief Build a per-node Lab 5 identifier.
  * @param base One of the LAB5_*_BASE values.
  * @param node Node ID from enum lab_node.

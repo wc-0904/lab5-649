@@ -8,6 +8,7 @@
 #include "lab_can.h"
 #include "lab_io.h"
 #include "lab_protocol.h"
+#include "raft_agent.h"
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/printk.h>
@@ -192,12 +193,14 @@ static void dispatch_task(void *a, void *b, void *c)
 		uint32_t id = rx.frame.id;
 		/*
 		 * Lab 5 traffic is not Lab 3 catalog traffic: lab_valid() would
-		 * reject it and inflate the malformed counter. The agent takes
-		 * these over in P2; until then REF only drives its receive marker
-		 * so the pin and the masked filter can be checked on the bench.
+		 * reject it and inflate the malformed counter. REF goes to the
+		 * agent, which owns the REF_RX marker and SYNC. The rest of the
+		 * consensus range is accepted by the filter and dropped until the
+		 * phase that owns it. The millisecond uptime is a placeholder
+		 * timestamp: P6 replaces it with a capture at the chosen point.
 		 */
 		if (id == LAB5_REF) {
-			lab_io_toggle(LAB_REF_RX);
+			raft_on_ref(rx.frame.data, (uint64_t)k_uptime_get() * 1000U);
 			finish(DISPATCH, start);
 			continue;
 		}
@@ -693,6 +696,8 @@ int lab_tasks_start(void)
 
 		return rc;
 	}
+	/* Adopt the configured role before any REF can arrive. */
+	raft_agent_init();
 	lab_io_set(LAB_ERR, true);
 	lab_io_set(LAB_DIR, LAB_NODE_ID == 3);
 	rc = lab_io_pwm(LAB_NODE_ID == 2 ? SERVO_PERIOD_NS : MOTOR_PERIOD_NS,

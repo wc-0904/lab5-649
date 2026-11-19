@@ -104,7 +104,26 @@ before the Lab 3 validation so they are not counted as malformed.
 | 1.5 | Extend the CAN catalog with REF, APPEND, APPEND_ACK, REQ_VOTE, VOTE, client request and redirect, from **D4** | `lab_protocol.h/.c` | `lab_slot()` and `lab_valid()` cover the new IDs, host tests extended |
 | 1.6 | Add LEADER, SYNC, REF_RX, HZ and PPS outputs, from **D28** | `lab_io.h/.c`, overlay, `WIRING.md` | Pins assigned, scoped and documented |
 
-### P2. Default-leader boot and the two periodic frames, checkoff step 2
+### P2. Default-leader boot and the two periodic frames, checkoff step 2  [IMPLEMENTED, not yet on hardware]
+
+Wire formats settled (**D5**): REF carries a 48 bit microsecond master clock in
+bytes 0..5 and a 16 bit cycle counter in bytes 6..7. 48 bits of microseconds is
+about nine years of uptime and microseconds is the unit the PPS spread is
+measured in. AppendEntries fits eight bytes without fragmentation, which also
+answers most of **D6**: term, prevLogIndex (16 bits, covering log_size 30000),
+prevLogTerm, leaderCommit, entry count, and the single entry's event. An entry's
+index is prevLogIndex + 1 and its term is the leader's, so only the event type
+needs to travel.
+
+`lab_can_send()` silently drops any identifier outside the Lab 3 catalog, so
+Lab 5 frames go out through `lab_can_send_lab5()` on the STM32 and
+`send_lab5()` on the Pi, neither of which stamps a sequence byte.
+
+REF and APPEND use an absolute schedule that **skips rather than bursts** when a
+tick is late: a skipped REF is better than two REFs milliseconds apart, because
+the follower's drift ratio in P6 is computed from the interval between
+consecutive receipts.
+
 
 | # | Task | Where | Done when |
 |---|---|---|---|

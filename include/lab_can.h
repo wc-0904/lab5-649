@@ -22,6 +22,15 @@ int lab_can_receive(struct lab_rx *rx, k_timeout_t timeout);
  * @param data Eight-byte payload; byte zero/CTRL CRC filled here.
  */
 void lab_can_send(uint16_t id, uint8_t data[8]);
+/** @brief Send a Lab 5 frame onto both buses with the payload untouched.
+ *
+ * lab_can_send() stamps a Lab 3 sequence number into byte zero and refuses any
+ * identifier outside the Lab 3 catalog, so consensus and time frames, whose
+ * every byte is payload, go out through this path instead.
+ * @param id Lab 5 identifier from enum lab5_id.
+ * @param data Eight bytes, sent exactly as given.
+ */
+void lab_can_send_lab5(uint16_t id, const uint8_t data[8]);
 /** @brief Return total dropped software RX frames.
  * @return Overflow count.
  */

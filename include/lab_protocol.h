@@ -33,6 +33,29 @@ enum lab5_id { LAB5_REF = 0x008, LAB5_APPEND = 0x040, LAB5_APPEND_ACK_BASE = 0x0
  * 0x040..0x05f instead of one slot each.
  */
 enum lab5_filter { LAB5_FILTER_ID = 0x040, LAB5_FILTER_MASK = 0x7e0 };
+/** @brief Decoded REF payload: the leader's clock and its cycle counter.
+ *
+ * Wire layout, little endian: bytes 0..5 are the master clock in microseconds
+ * as a 48 bit unsigned value, bytes 6..7 are a 16 bit cycle counter. 48 bits of
+ * microseconds is about nine years of uptime, and microseconds is the unit the
+ * PPS spread is measured in, so the wire carries no less resolution than the
+ * report needs. The counter lets the TA confirm no REF was missed.
+ */
+struct lab5_ref { uint64_t master_us; uint16_t cycle; };
+/** @brief Decoded AppendEntries header.
+ *
+ * Wire layout, little endian: byte 0 term, bytes 1..2 prevLogIndex, byte 3
+ * prevLogTerm, bytes 4..5 leaderCommit, byte 6 entry count, byte 7 the event of
+ * the single carried entry. Sixteen bits of index covers the configured
+ * log_size of 30000. An entry's own index is prevLogIndex + 1 and its term is
+ * the leader's term, so one entry needs only its event type on the wire, which
+ * is how AppendEntries fits in eight bytes without fragmentation. count is zero
+ * for the empty heartbeat append.
+ */
+struct lab5_append { uint8_t term; uint16_t prev_index; uint8_t prev_term;
+	uint16_t commit; uint8_t count; uint8_t event; };
+/** @brief Largest master clock the 48 bit REF field can carry. */
+#define LAB5_REF_US_MAX 0xffffffffffffULL
 /** @brief Central timing choices in milliseconds; recovery is measured separately. */
 enum lab_time { LAB_HB_MS = 20, LAB_TIMEOUT_MS = 60, LAB_PID_MS = 10,
 	LAB_FORCE_MS = 50, LAB_BLINK_MS = 500, LAB_DEDUP_MS = 200 };
@@ -62,6 +85,27 @@ bool lab_valid(uint32_t id, const uint8_t data[8]);
  * @return Command in team-defined units.
  */
 struct lab_control lab_decode(const uint8_t data[8]);
+/** @brief Encode a REF payload.
+ * @param data Eight bytes to fill.
+ * @param master_us Leader clock in microseconds; only the low 48 bits travel.
+ * @param cycle Cycle counter, wrapping at 16 bits.
+ */
+void lab5_ref_encode(uint8_t data[8], uint64_t master_us, uint16_t cycle);
+/** @brief Decode a REF payload.
+ * @param data Eight received bytes.
+ * @return Master clock and cycle counter.
+ */
+struct lab5_ref lab5_ref_decode(const uint8_t data[8]);
+/** @brief Encode an AppendEntries header.
+ * @param data Eight bytes to fill.
+ * @param header Fields to encode; count zero means an empty append.
+ */
+void lab5_append_encode(uint8_t data[8], const struct lab5_append *header);
+/** @brief Decode an AppendEntries header.
+ * @param data Eight received bytes.
+ * @return Decoded fields.
+ */
+struct lab5_append lab5_append_decode(const uint8_t data[8]);
 /** @brief Build a per-node Lab 5 identifier.
  * @param base One of the LAB5_*_BASE values.
  * @param node Node ID from enum lab_node.
