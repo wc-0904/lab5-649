@@ -47,17 +47,25 @@ directory is now about 1 MB. Things worth knowing before touching anything:
 
 ### What builds
 
-Build and flash exactly as Lab 3 did, from inside this directory, and remember the user
-runs every build and flash:
+Remember the user runs every build and flash. **On WSL, source `setup_win.sh`, not
+`setup.sh`**: `setup.sh` assumes the Mac layout and fails here on a missing venv, and it
+would point `ZEPHYR_BASE` at the coursework folder, which is not a Zephyr tree.
 
 ```sh
-source ./setup.sh
+source ./setup_win.sh
 west build -b nucleo_f401re/stm32f401xe -d build-demo-n2 . -- -DLAB_NODE_ID=2
 west build -b nucleo_f401re/stm32f401xe -d build-demo-n3 . -- -DLAB_NODE_ID=3
-west flash -d build-demo-n2 --runner openocd --verify --skip-rebuild
+west flash -d build-demo-n2 -r openocd --no-rebuild --verify
 ```
 
-`setup.sh` activates `../../.venv` and sets `ZEPHYR_BASE` to this directory's parent.
+west 1.5.0 renamed `--skip-rebuild` to `--no-rebuild`; the old spelling falls through to
+the openocd runner, which rejects it and never starts the flash. The ST-LINK is invisible
+to WSL until it is attached with `usbipd` from an elevated PowerShell, and the console is
+`/dev/ttyACM*`, not the Mac's `/dev/cu.usbmodem*`. See README.md for the full WSL path.
+
+`setup_win.sh` activates `$HOME/zephyrproject/.venv`, sets `ZEPHYR_BASE` to
+`$HOME/zephyrproject/zephyr` and `ZEPHYR_SDK_INSTALL_DIR` to `$HOME/zephyr-sdk-1.0.1`,
+checking all three exist first. `setup.sh` is the Mac layout and activates `../../.venv`.
 CMake cache options: `LAB_NODE_ID` (2 front or 3 rear, required), `LAB_TRACE_TASK`
 (task index 0..8 on PC11, `-1` off), `LAB_MEASURE_MODE` (0 normal, 1 RX only, 2 N3 DRIVE,
 3 N2 RELAY), `LAB_DIAGNOSTICS` (intrusive periodic console summaries, default OFF).

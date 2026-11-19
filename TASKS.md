@@ -61,10 +61,30 @@ flashed to both boards. Confirmed on hardware from the boot banner:
   so zero proves PB12..PB15 and PA0 configure as outputs and that CAN init
   accepted all nine filters, seven Lab 3 plus two Lab 5 masked, on both buses.
 
-Still unverified on the bench: the pin walk has not been observed on a scope,
-REF_RX has not been driven by a real REF frame, and no Lab 3 traffic regression
-test has been run since the dispatch and filter changes. Those need the Pi and
-the bus, not just USB.
+**Lab 3 regression passed on the rebuilt rig, 2026-11-19.** With `cockpit.py` and
+`send_test.py` running, `candump` showed `010` CTRL at ~20 ms decoding correctly
+(steer 0, throttle 0x19 = 25, valid CRC), `100`/`101`/`102` heartbeats at 20 ms
+with byte 1 `00` (error cleared) and byte 2 `03` (both buses healthy) on all
+three nodes, `200` BLINK carrying the left-blinker request, `300` FORCE at 50 ms,
+and no `020` FAULT. That closes the open risk from P1: the `dispatch_task()`
+branch and the two masked RX filters do not disturb Lab 3 traffic.
+
+Also confirmed on the bench: the Pi's two MCP2515s enumerate and pass
+`can_check.py check` at 500 kbit/s, the config hash `825e3115` is identical on
+all three nodes including the Pi's runtime parse, and heartbeat periods settle to
+20 ms once the cluster is whole.
+
+Still unobserved: the boot pin walk on a scope, and REF_RX driven by a real REF
+frame. Both need the five Lab 5 outputs wired to test points, which is not done
+yet and is not needed before P2.
+
+**Bench finding that feeds D24.** Every logical frame appears **four times** on
+the wire: the sender transmits on both buses, then each of the other two nodes
+relays one copy. Forwarding is unconditional on all three nodes. With Lab 5
+adding `REF` at 20 ms, `APPEND`, per-follower acks and client traffic on top,
+`REF` would be queueing behind three relayed copies of everything else. The
+relay policy probably has to become conditional, driven by `getNetwork()`
+reachability, rather than always-on. Decide this before P11, not during it.
 
 **Deviation from 1.5 as written.** `lab_slot()` and `lab_valid()` were *not*
 extended to the Lab 5 identifiers. `lab_slot()` indexes the Lab 3 dedup cache
