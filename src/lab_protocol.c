@@ -103,7 +103,12 @@ bool lab_valid(uint32_t id, const uint8_t data[8])
  */
 void lab5_ref_encode(uint8_t data[8], uint64_t master_us, uint16_t cycle)
 {
-	uint64_t clock = master_us & LAB5_REF_US_MAX;
+	/* Clamp rather than wrap: a clock before the epoch is a configuration
+	 * error, and sending zero makes that obvious instead of plausible.
+	 */
+	uint64_t clock = master_us < LAB5_EPOCH_US ? 0 : master_us - LAB5_EPOCH_US;
+
+	clock &= LAB5_REF_US_MAX;
 
 	for (int i = 0; i < 6; i++) {
 		data[i] = (uint8_t)(clock >> (8 * i));
@@ -123,6 +128,7 @@ struct lab5_ref lab5_ref_decode(const uint8_t data[8])
 	for (int i = 0; i < 6; i++) {
 		ref.master_us |= (uint64_t)data[i] << (8 * i);
 	}
+	ref.master_us += LAB5_EPOCH_US;
 	ref.cycle = (uint16_t)((uint16_t)data[6] | ((uint16_t)data[7] << 8));
 	return ref;
 }

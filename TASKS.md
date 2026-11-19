@@ -107,9 +107,12 @@ before the Lab 3 validation so they are not counted as malformed.
 ### P2. Default-leader boot and the two periodic frames, checkoff step 2  [IMPLEMENTED, not yet on hardware]
 
 Wire formats settled (**D5**): REF carries a 48 bit microsecond master clock in
-bytes 0..5 and a 16 bit cycle counter in bytes 6..7. 48 bits of microseconds is
-about nine years of uptime and microseconds is the unit the PPS spread is
-measured in. AppendEntries fits eight bytes without fragmentation, which also
+bytes 0..5, measured from `LAB5_EPOCH_US` (2026-01-01T00:00:00Z), and a 16 bit
+cycle counter in bytes 6..7. The epoch offset is not cosmetic: a CLOCK_REALTIME
+value in 2026 is about 1.8e15 microseconds, needs 51 bits, and was silently
+truncating to a 1973 date on the wire until a candump decode caught it. Measured
+from the epoch the field spans 8.9 years, which keeps microsecond resolution and
+the full 16 bit counter. AppendEntries fits eight bytes without fragmentation, which also
 answers most of **D6**: term, prevLogIndex (16 bits, covering log_size 30000),
 prevLogTerm, leaderCommit, entry count, and the single entry's event. An entry's
 index is prevLogIndex + 1 and its term is the leader's, so only the event type

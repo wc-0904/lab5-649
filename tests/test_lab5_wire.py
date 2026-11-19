@@ -14,7 +14,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "pi" / "demo"))
 
-from raft_agent import REF_US_MAX, append_decode, append_encode, ref_decode, ref_encode
+from raft_agent import (EPOCH_US, REF_US_MAX, append_decode, append_encode,
+                        ref_decode, ref_encode)
 
 HARNESS = r"""
 #include "lab_protocol.h"
@@ -97,8 +98,9 @@ class WireFormatTests(unittest.TestCase):
         return encoded, decoded
 
     def test_ref_matches_firmware(self):
-        cases = [(0, 0), (1, 1), (1_000_000, 7), (0x1234567890AB, 0xBEEF),
-                 (REF_US_MAX, 0xFFFF)]
+        cases = [(EPOCH_US, 0), (EPOCH_US + 1, 1), (EPOCH_US + 1_000_000, 7),
+                 (EPOCH_US + 0x1234567890AB, 0xBEEF),
+                 (EPOCH_US + REF_US_MAX, 0xFFFF)]
         for master_us, cycle in cases:
             with self.subTest(master_us=master_us, cycle=cycle):
                 encoded, decoded = self.c_run("r", master_us, cycle)
@@ -107,11 +109,26 @@ class WireFormatTests(unittest.TestCase):
                 self.assertEqual(ref_decode(ref_encode(master_us, cycle)),
                                  (master_us, cycle))
 
-    def test_ref_truncates_above_48_bits(self):
-        # The wire carries 48 bits; anything above must drop, not corrupt the cycle.
-        encoded, _ = self.c_run("r", REF_US_MAX + 1, 5)
-        self.assertEqual(encoded, ref_encode(REF_US_MAX + 1, 5).hex())
-        self.assertEqual(ref_decode(ref_encode(REF_US_MAX + 1, 5)), (0, 5))
+    def test_a_real_wall_clock_survives_the_round_trip(self):
+        # 2026-11-19 is about 1.8e15 us since the Unix epoch, which needs 51 bits.
+        # Without the epoch offset this truncated to a 1973 date on the wire.
+        now_us = 1795000000 * 1_000_000
+        self.assertGreater(now_us, REF_US_MAX)
+        encoded, decoded = self.c_run("r", now_us, 871)
+        self.assertEqual(encoded, ref_encode(now_us, 871).hex())
+        self.assertEqual(decoded, "%d %d" % (now_us, 871))
+        self.assertEqual(ref_decode(ref_encode(now_us, 871)), (now_us, 871))
+
+    def test_a_clock_before_the_epoch_clamps_rather_than_wrapping(self):
+        encoded, _ = self.c_run("r", EPOCH_US - 1, 5)
+        self.assertEqual(encoded, ref_encode(EPOCH_US - 1, 5).hex())
+        self.assertEqual(ref_decode(ref_encode(EPOCH_US - 1, 5)), (EPOCH_US, 5))
+
+    def test_epoch_constant_matches_the_firmware(self):
+        header = (ROOT / "include" / "lab_protocol.h").read_text()
+        import re
+        value = re.search(r"LAB5_EPOCH_US (\d+)ULL", header).group(1)
+        self.assertEqual(int(value), EPOCH_US)
 
     def test_append_matches_firmware(self):
         cases = [(0, 0, 0, 0, 0, 0), (1, 0, 0, 0, 0, 0),

@@ -15,7 +15,11 @@ FOLLOWER, CANDIDATE, LEADER = "FOLLOWER", "CANDIDATE", "LEADER"
 #: Term every node adopts when a pre-defined leader is configured.
 BOOT_TERM = 1
 
-#: Largest master clock the 48 bit REF field can carry.
+#: Zero point of the REF clock field: 2026-01-01T00:00:00Z in microseconds.
+#: Must equal LAB5_EPOCH_US in include/lab_protocol.h.
+EPOCH_US = 1767225600000000
+
+#: Largest offset from EPOCH_US the 48 bit REF field can carry, about 8.9 years.
 REF_US_MAX = (1 << 48) - 1
 
 #: Empty AppendEntries period in seconds, per checkoff step 2.
@@ -29,7 +33,8 @@ def ref_encode(master_us, cycle):
     :param cycle: Cycle counter, wrapping at 16 bits.
     :return: Eight bytes.
     """
-    clock = master_us & REF_US_MAX
+    # Clamp rather than wrap: a clock before the epoch is a configuration error.
+    clock = (0 if master_us < EPOCH_US else master_us - EPOCH_US) & REF_US_MAX
     return bytes((clock >> (8 * i)) & 0xFF for i in range(6)) + struct.pack("<H", cycle & 0xFFFF)
 
 
@@ -39,7 +44,7 @@ def ref_decode(data):
     :param data: Eight received bytes.
     :return: (master_us, cycle).
     """
-    clock = sum(data[i] << (8 * i) for i in range(6))
+    clock = sum(data[i] << (8 * i) for i in range(6)) + EPOCH_US
     return clock, struct.unpack_from("<H", data, 6)[0]
 
 

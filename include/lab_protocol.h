@@ -36,10 +36,13 @@ enum lab5_filter { LAB5_FILTER_ID = 0x040, LAB5_FILTER_MASK = 0x7e0 };
 /** @brief Decoded REF payload: the leader's clock and its cycle counter.
  *
  * Wire layout, little endian: bytes 0..5 are the master clock in microseconds
- * as a 48 bit unsigned value, bytes 6..7 are a 16 bit cycle counter. 48 bits of
- * microseconds is about nine years of uptime, and microseconds is the unit the
- * PPS spread is measured in, so the wire carries no less resolution than the
- * report needs. The counter lets the TA confirm no REF was missed.
+ * **since LAB5_EPOCH_US** as a 48 bit unsigned value, bytes 6..7 are a 16 bit
+ * cycle counter. The offset matters: a CLOCK_REALTIME value in 2026 is about
+ * 1.8e15 microseconds, which needs 51 bits and would be silently truncated to a
+ * 1973 date. Measuring from a fixed recent epoch keeps microsecond resolution,
+ * which is the unit the PPS spread is reported in, and still leaves the full 16
+ * bit counter the TA reads to confirm no REF was missed. The encode and decode
+ * calls take and return absolute microseconds, so the offset never leaks out.
  */
 struct lab5_ref { uint64_t master_us; uint16_t cycle; };
 /** @brief Decoded AppendEntries header.
@@ -54,7 +57,13 @@ struct lab5_ref { uint64_t master_us; uint16_t cycle; };
  */
 struct lab5_append { uint8_t term; uint16_t prev_index; uint8_t prev_term;
 	uint16_t commit; uint8_t count; uint8_t event; };
-/** @brief Largest master clock the 48 bit REF field can carry. */
+/** @brief Zero point of the REF clock field: 2026-01-01T00:00:00Z in microseconds.
+ *
+ * The 48 bit field spans about 8.9 years from here, so it covers the course and
+ * then some. Both endpoints must use this same constant.
+ */
+#define LAB5_EPOCH_US 1767225600000000ULL
+/** @brief Largest offset from LAB5_EPOCH_US the 48 bit REF field can carry. */
 #define LAB5_REF_US_MAX 0xffffffffffffULL
 /** @brief Central timing choices in milliseconds; recovery is measured separately. */
 enum lab_time { LAB_HB_MS = 20, LAB_TIMEOUT_MS = 60, LAB_PID_MS = 10,
