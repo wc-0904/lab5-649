@@ -12,6 +12,14 @@
 
 /** @brief Term every node adopts when a pre-defined leader is configured. */
 #define BOOT_TERM 1
+/** @brief Shortest interval between reports of a reference gap, milliseconds.
+ *
+ * A gap is exceptional, so reporting it is worth the UART time, but a bus that
+ * is dropping references would otherwise print on every frame. Lab 3 disables
+ * periodic console output so printing cannot distort timing measurements; this
+ * stays within that rule by printing only on an event, and never in a burst.
+ */
+#define GAP_REPORT_MS 1000
 
 static struct {
 	enum raft_role role;
@@ -21,6 +29,7 @@ static struct {
 	bool have_cycle;
 	uint16_t cycle;
 	uint32_t missed;
+	int64_t last_gap_report_ms;
 	struct lab5_ref last;
 	uint64_t last_local_us;
 } state;
@@ -102,6 +111,10 @@ bool raft_synced(void)
 void raft_on_ref(const uint8_t data[8], uint64_t local_us)
 {
 	struct lab5_ref ref = lab5_ref_decode(data);
+	int64_t now = k_uptime_get();
+	uint32_t gap = 0;
+	uint32_t missed;
+	bool report_gap = false;
 	bool first;
 
 	k_spinlock_key_t key = k_spin_lock(&state_lock);
@@ -111,10 +124,16 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us)
 		uint16_t step = (uint16_t)(ref.cycle - state.cycle);
 
 		if (step > 1) {
-			state.missed += (uint32_t)(step - 1);
+			gap = (uint32_t)(step - 1);
+			state.missed += gap;
+			report_gap = now - state.last_gap_report_ms >= GAP_REPORT_MS;
+			if (report_gap) {
+				state.last_gap_report_ms = now;
+			}
 		}
 	}
 	first = !state.synced;
+	missed = state.missed;
 	state.cycle = ref.cycle;
 	state.have_cycle = true;
 	state.synced = true;
@@ -125,6 +144,17 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us)
 	lab_io_toggle(LAB_REF_RX);
 	if (first) {
 		lab_io_set(LAB_SYNC, true);
+	}
+	if (!LAB5_CFG_DEBUG) {
+		return;
+	}
+	/* Printing runs in the dispatch thread, so keep it to events, not a period. */
+	if (first) {
+		printk("raft: SYNC to %s, cycle=%u master=%llu us\n",
+		       lab_node_name(raft_leader()), ref.cycle,
+		       (unsigned long long)ref.master_us);
+	} else if (report_gap) {
+		printk("raft: missed %u REF at cycle=%u, %u total\n", gap, ref.cycle, missed);
 	}
 }
 
