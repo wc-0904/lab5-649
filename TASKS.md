@@ -134,6 +134,48 @@ consecutive receipts.
 | 2.5 | REF receive path and REF_RX toggle on followers | `lab_tasks.c` | SYNC on all three, REF_RX toggling |
 | 2.6 | Confirm REF wins arbitration against APPEND and CTRL under load | bench | Sync period does not jitter when a log entry is in flight |
 
+### RESUME HERE, 2026-11-19
+
+P2 is written, committed and pushed. Both images build clean. The bench is in a
+known-bad state that needs fixing first:
+
+**The board physically wired as N2 is running the N3 image.** Both boards report
+`node 3 (drivetrain)`: the one on `ACM1` has the new P2 firmware, the one on
+`ACM0` still has P1. The cluster currently has two node 3s and no node 2, so
+every heartbeat, peer-tracking and degraded result would be garbage until fixed.
+
+**`west flash -i <serial>` does not select the adapter here.** openocd matches a
+serial string that does not correspond to what `pyserial` prints, and on a failed
+match it silently falls back to the first adapter instead of erroring. Do not
+rely on it. Attach **one board at a time** with `usbipd` and run one flash
+command, then verify the banner before touching the other.
+
+Recovery, one board attached at a time:
+
+```sh
+west flash -d build-demo-n2 -r openocd --no-rebuild --verify   # board wired as N2
+west flash -d build-demo-n3 -r openocd --no-rebuild --verify   # board wired as N3
+```
+
+Telling the images apart without trusting the serial:
+
+| | N2 | N3 |
+|---|---|---|
+| image size in the verify line | 66 584 B | 67 272 B |
+| banner | `node 2 (steering)` | `node 3 (drivetrain)` |
+| `ACK=` in the banner | `0x046` | `0x047` |
+
+Then P2's remaining acceptance, checkoff step 2:
+
+1. Both banners carry `raft: term=1 role=FOLLOWER leader=cockpit` and
+   `raft    term=1 role=FOLLOWER leader=cockpit synced=0`.
+2. `git pull` on the Pi, run `cockpit.py`, and `candump -t d any` shows `008`
+   every 20 ms and `040` every 100 ms, with nothing in `041`..`054`.
+3. The cockpit's exit summary reports `skipped=0`; anything else means its event
+   loop is missing REF deadlines, which matters for P6.
+4. `SYNC` (PB13) goes high on the first REF and `REF_RX` (PB14) toggles at 25 Hz.
+   This is the first thing that needs those pins reachable, even by scope probe.
+
 ### P3. Log and state machine, host testable
 
 | # | Task | Where | Done when |
