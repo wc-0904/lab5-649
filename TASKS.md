@@ -104,7 +104,7 @@ before the Lab 3 validation so they are not counted as malformed.
 | 1.5 | Extend the CAN catalog with REF, APPEND, APPEND_ACK, REQ_VOTE, VOTE, client request and redirect, from **D4** | `lab_protocol.h/.c` | `lab_slot()` and `lab_valid()` cover the new IDs, host tests extended |
 | 1.6 | Add LEADER, SYNC, REF_RX, HZ and PPS outputs, from **D28** | `lab_io.h/.c`, overlay, `WIRING.md` | Pins assigned, scoped and documented |
 
-### P2. Default-leader boot and the two periodic frames, checkoff step 2  [IMPLEMENTED, not yet on hardware]
+### P2. Default-leader boot and the two periodic frames, checkoff step 2  [DONE, verified on hardware 2026-11-20]
 
 Wire formats settled (**D5**): REF carries a 48 bit microsecond master clock in
 bytes 0..5, measured from `LAB5_EPOCH_US` (2026-01-01T00:00:00Z), and a 16 bit
@@ -121,6 +121,19 @@ needs to travel.
 `lab_can_send()` silently drops any identifier outside the Lab 3 catalog, so
 Lab 5 frames go out through `lab_can_send_lab5()` on the STM32 and
 `send_lab5()` on the Pi, neither of which stamps a sequence byte.
+
+Verified on the bench: `candump -t d any` shows `008` every 20.0 ms and `040`
+every 100 ms on **both** buses, with the cycle counter contiguous and nothing in
+`041`..`054`, so no `REQ_VOTE`. The cockpit reported `refs=3000 appends=600
+skipped=0` over 60 seconds, exactly 50/s and 10/s. Both Nucleos printed
+`raft: SYNC to cockpit, cycle=N master=1795217266075343 us`, which decodes to
+2026-11-20, and byte 2 of every heartbeat read `03`, so all three nodes see both
+buses healthy.
+
+Two bugs the bench caught, both now fixed: the 48 bit clock truncated a
+CLOCK_REALTIME value to a 1973 date until it was measured from `LAB5_EPOCH_US`,
+and a follower reported 63635 missed references when the leader restarted its
+cycle counter, until a backward jump was recognised as a restart.
 
 REF and APPEND use an absolute schedule that **skips rather than bursts** when a
 tick is late: a skipped REF is better than two REFs milliseconds apart, because
@@ -181,7 +194,41 @@ Then P2's remaining acceptance, checkoff step 2:
 4. `SYNC` (PB13) goes high on the first REF and `REF_RX` (PB14) toggles at 25 Hz.
    This is the first thing that needs those pins reachable, even by scope probe.
 
-### P3. Log and state machine, host testable
+### P3. Log and state machine, host testable  [IMPLEMENTED, host tested]
+
+Settled here:
+
+- **D6/D7, log entry and storage.** An entry's index is its position, so only
+  term and event are stored, two bytes each. The STM32 ring holds 4096 entries
+  for 8 KB, against 53 KB of free SRAM; the Pi keeps the whole log. The
+  configured `log_size` stays 30000 and the ring is the documented deviation.
+  When the ring fills, the oldest entry is dropped and the first retained index
+  advances, which replay respects.
+- **Event encoding.** Twenty values, laid out systematically so node and bus
+  come back with a shift: `0x10 + node` up, `0x18 + node` down, and
+  `0x20`/`0x28` plus `(node - 1) * 2 + (bus - 1)` for links. Twenty values need
+  five bits, which is why one entry fits in the AppendEntries byte reserved
+  for it.
+- **D9, `getNetwork()` representation.** Two bitmasks plus a failure flag: bit
+  n-1 of `nodes` is node n, bit `(n-1)*2 + (b-1)` of `links` is node n on bus b.
+  Three bytes in all, and `network_print()` renders it as one line such as
+  `net nodes=CSD links=121.12 mode=OK`. The demo compares that line character
+  for character across the three consoles.
+- **D8, replay.** `network_replay()` rebuilds from the oldest retained entry
+  every time, so the graph is a pure function of the log by construction rather
+  than by discipline. Incremental application stays available as an
+  optimisation if profiling ever asks for it.
+
+`raft_log.c` and `network_state.c` are pure C with no Zephyr dependency, so the
+host tests compile and run the same code the firmware will. They are in
+`target_sources` ready for P4, but nothing in the firmware calls them yet, so
+they cost no RAM until a `struct raft_log` is declared.
+
+Verified by 15 host tests, including 200 random logs replayed through both the
+C implementation and the Python one with identical rendered graphs. That is the
+Part 4 determinism requirement across a heterogeneous cluster, where "any node"
+spans C firmware and Python.
+
 
 | # | Task | Where | Done when |
 |---|---|---|---|
