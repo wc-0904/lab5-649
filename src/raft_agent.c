@@ -20,6 +20,16 @@
  * stays within that rule by printing only on an event, and never in a burst.
  */
 #define GAP_REPORT_MS 1000
+/** @brief Cycle counter step above which a jump means the master restarted.
+ *
+ * The counter is 16 bits and advances by one every heartbeat, so a forward step
+ * of more than half its range is really a backward jump: the time master
+ * restarted and began counting from zero again. Treating that as lost
+ * references would report tens of thousands of them, which is what happened
+ * before this check existed. The checkoff restarts the leader repeatedly, so
+ * this is a normal event, not an error.
+ */
+#define CYCLE_RESTART_STEP 32768U
 
 static struct {
 	enum raft_role role;
@@ -115,6 +125,7 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us)
 	uint32_t gap = 0;
 	uint32_t missed;
 	bool report_gap = false;
+	bool restarted = false;
 	bool first;
 
 	k_spinlock_key_t key = k_spin_lock(&state_lock);
@@ -123,7 +134,9 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us)
 	if (state.have_cycle) {
 		uint16_t step = (uint16_t)(ref.cycle - state.cycle);
 
-		if (step > 1) {
+		if (step >= CYCLE_RESTART_STEP) {
+			restarted = true;
+		} else if (step > 1) {
 			gap = (uint32_t)(step - 1);
 			state.missed += gap;
 			report_gap = now - state.last_gap_report_ms >= GAP_REPORT_MS;
@@ -153,6 +166,9 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us)
 		printk("raft: SYNC to %s, cycle=%u master=%llu us\n",
 		       lab_node_name(raft_leader()), ref.cycle,
 		       (unsigned long long)ref.master_us);
+	} else if (restarted) {
+		printk("raft: time master restarted, cycle=%u master=%llu us\n",
+		       ref.cycle, (unsigned long long)ref.master_us);
 	} else if (report_gap) {
 		printk("raft: missed %u REF at cycle=%u, %u total\n", gap, ref.cycle, missed);
 	}
