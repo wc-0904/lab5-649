@@ -349,6 +349,68 @@ class StateMachineTests(unittest.TestCase):
             with self.subTest(trial=trial):
                 self.assert_accept_same(offers)
 
+    def test_routing_prefers_a_shared_bus(self):
+        net = Network()
+        for node in (1, 2, 3):
+            net.add_node(node)
+            for bus in (1, 2):
+                net.add_link(node, bus)
+        self.assertEqual(net.route_to(1, 3), (1, 0, True))
+
+    def test_routing_falls_back_to_a_relay_in_scenario_c(self):
+        # Lab 3 R4.8 (c): N1 loses bus B, N3 loses bus A, N2 bridges.
+        net = Network()
+        for node in (1, 2, 3):
+            net.add_node(node)
+            for bus in (1, 2):
+                net.add_link(node, bus)
+        net.drop_link(1, 2)
+        net.drop_link(3, 1)
+        bus, relay, reachable = net.route_to(1, 3)
+        self.assertTrue(reachable)
+        self.assertEqual(relay, 2)
+        self.assertEqual(bus, 1)
+        # And the reverse direction relays back through the same node.
+        self.assertEqual(net.route_to(3, 1), (2, 2, True))
+
+    def test_a_node_with_both_links_down_is_unreachable(self):
+        net = Network()
+        for node in (1, 2, 3):
+            net.add_node(node)
+            for bus in (1, 2):
+                net.add_link(node, bus)
+        net.drop_link(3, 1)
+        net.drop_link(3, 2)
+        self.assertEqual(net.route_to(1, 3), (0, 0, False))
+        self.assertEqual(net.route_to(2, 3), (0, 0, False))
+
+    def test_a_dead_node_is_unreachable_even_with_links_recorded(self):
+        net = Network()
+        for node in (1, 2, 3):
+            net.add_node(node)
+            for bus in (1, 2):
+                net.add_link(node, bus)
+        net.drop_node(3)
+        self.assertEqual(net.route_to(1, 3), (0, 0, False))
+
+    def test_every_node_derives_the_same_routes_from_the_same_log(self):
+        # Part 5.1: each node builds its table from its own agent's getNetwork().
+        log = RaftLog()
+        for node in (1, 2, 3):
+            log.append(1, event_node(node, True))
+            for bus in (1, 2):
+                log.append(1, event_link(node, bus, True))
+        log.append(1, event_link(1, 2, False))
+        log.append(1, event_link(3, 1, False))
+        tables = []
+        for _ in range(3):
+            net = Network()
+            net.replay(log)
+            tables.append({src: net.routing_table(src) for src in (1, 2, 3)})
+        self.assertEqual(tables[0], tables[1])
+        self.assertEqual(tables[1], tables[2])
+        self.assertEqual(tables[0][1][3], (1, 2, True))
+
     def test_event_names_match_the_handout_vocabulary(self):
         self.assertEqual(event_name(event_node(1, True)), "NODE_cockpit_UP")
         self.assertEqual(event_name(event_node(3, False)), "NODE_drivetrain_DOWN")

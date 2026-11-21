@@ -338,6 +338,44 @@ class Network:
                 self.apply(entry[1])
             index += 1
 
+    def route_to(self, src, dst):
+        """Work out how one node reaches another from the committed graph.
+
+        Prefers a bus both ends are on, else a single node that bridges them,
+        which is the relayed hop of Part 5.2. The lowest numbered bus and relay
+        are chosen so every node derives the same table from the same log.
+
+        :param src: Sending node ID.
+        :param dst: Destination node ID.
+        :return: (bus, relay, reachable); bus and relay are 0 when unreachable.
+        """
+        if src == dst or not self.node_up(src) or not self.node_up(dst):
+            return 0, 0, False
+        for bus in range(1, BUSES + 1):
+            if self.link_up(src, bus) and self.link_up(dst, bus):
+                return bus, 0, True
+        for relay in range(1, NODES + 1):
+            if relay in (src, dst) or not self.node_up(relay):
+                continue
+            inbound = outbound = 0
+            for bus in range(1, BUSES + 1):
+                if not inbound and self.link_up(src, bus) and self.link_up(relay, bus):
+                    inbound = bus
+                if self.link_up(relay, bus) and self.link_up(dst, bus):
+                    outbound = bus
+            if inbound and outbound:
+                return inbound, relay, True
+        return 0, 0, False
+
+    def routing_table(self, src):
+        """Distil the graph into the routes one node needs.
+
+        :param src: This node's ID.
+        :return: Mapping of destination to (bus, relay, reachable).
+        """
+        return {dst: self.route_to(src, dst)
+                for dst in range(1, NODES + 1) if dst != src}
+
     def render(self):
         """Render the graph as one line, matching network_print() in C.
 

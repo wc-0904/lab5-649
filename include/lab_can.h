@@ -31,6 +31,17 @@ void lab_can_send(uint16_t id, uint8_t data[8]);
  * @param data Eight bytes, sent exactly as given.
  */
 void lab_can_send_lab5(uint16_t id, const uint8_t data[8]);
+/** @brief Report whether this node's own link to one bus looks down.
+ *
+ * Reads the controller's error state rather than inferring from missing peer
+ * traffic, so it answers "is my branch connected" rather than "is anyone
+ * talking". Pulling this node's jumper leaves its transceiver unacknowledged,
+ * which drives the controller error passive and then bus off. That is the
+ * signal the owner-reports-own-links rule needs (TASKS.md D15).
+ * @param bus Physical index 0 for A, 1 for B.
+ * @return True when the controller is error passive, bus off or stopped.
+ */
+bool lab_can_link_down(int bus);
 /** @brief Return total dropped software RX frames.
  * @return Overflow count.
  */

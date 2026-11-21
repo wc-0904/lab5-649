@@ -7,7 +7,9 @@ checks the C and Python layouts against each other.
 import struct
 import time
 
-from protocol import APPEND, APPEND_ACK_BASE, REF, lab5_id_for
+from protocol import (APPEND, APPEND_ACK_BASE, CLIENT_REQ_BASE,
+                      CLIENT_REDIRECT as LAB5_CLIENT_REDIRECT, REF,
+                      lab5_id_for)
 from network_state import (APPEND_ACCEPTED, Network, RaftLog,
                            event_link, event_name, event_node)
 
@@ -63,6 +65,54 @@ def append_encode(term, prev_index, prev_term, commit, count=0, event=0):
     """
     return struct.pack("<BHBHBB", term & 0xFF, prev_index & 0xFFFF, prev_term & 0xFF,
                        commit & 0xFFFF, count & 0xFF, event & 0xFF)
+
+
+#: Reply results, matching enum lab5_reply_result in include/lab_protocol.h.
+REPLY_COMMITTED = 0
+REPLY_REDIRECT = 1
+
+
+def client_encode(event, request):
+    """Encode a client request asking the leader to record one event.
+
+    :param event: Encoded event.
+    :param request: Request id the client chose.
+    :return: Eight bytes.
+    """
+    return struct.pack("<BH5x", event & 0xFF, request & 0xFFFF)
+
+
+def client_decode(data):
+    """Decode a client request.
+
+    :param data: Eight received bytes.
+    :return: Mapping of event and request.
+    """
+    event, request = struct.unpack("<BH5x", data)
+    return {"event": event, "request": request}
+
+
+def reply_encode(result, leader, request, index):
+    """Encode the leader's reply, carrying either a commit or a redirect.
+
+    :param result: REPLY_COMMITTED or REPLY_REDIRECT.
+    :param leader: Node believed to be leader.
+    :param request: Request id being answered.
+    :param index: Index the entry was given, 0 for a redirect.
+    :return: Eight bytes.
+    """
+    return struct.pack("<BBHH2x", result & 0xFF, leader & 0xFF,
+                       request & 0xFFFF, index & 0xFFFF)
+
+
+def reply_decode(data):
+    """Decode a leader reply.
+
+    :param data: Eight received bytes.
+    :return: Mapping of result, leader, request and index.
+    """
+    result, leader, request, index = struct.unpack("<BBHH2x", data)
+    return {"result": result, "leader": leader, "request": request, "index": index}
 
 
 def ack_encode(term, match_index, result):
@@ -179,6 +229,8 @@ class RaftAgent:
         self.match_index = {peer: 0 for peer in self.peers}
         self.acks = 0
         self.committed = 0
+        # Requests already answered, so a relayed duplicate does not append twice.
+        self.client_seen = {}
         self.heartbeat = config["heartbeat_ms"] / 1000
         self.ref_timer = Periodic(self.heartbeat)
         self.append_timer = Periodic(APPEND_PERIOD)
@@ -265,6 +317,43 @@ class RaftAgent:
             print("raft: append idx=%d term=%d %s"
                   % (index, self.term, event_name(event)), flush=True)
         return index
+
+    def on_client_request(self, node, data):
+        """Steps 1, 2 and 6 of Figure 2, or the redirect when not leading.
+
+        A client that reaches a follower is told who the leader is rather than
+        being ignored, so the write path fails closed. Duplicate requests, which
+        this bus produces by relaying, are answered from the recorded index
+        instead of appending a second entry: checkoff step 4 wants exactly one
+        entry per change.
+
+        :param node: Node ID that asked.
+        :param data: Eight received bytes.
+        :return: (can_id, payload) to send back, or None when nothing to say.
+        """
+        request = client_decode(data)
+        key = (node, request["request"])
+        if not self.is_leader():
+            if not self.leader:
+                return None
+            return (LAB5_CLIENT_REDIRECT,
+                    reply_encode(REPLY_REDIRECT, self.leader, request["request"], 0))
+        if key in self.client_seen:
+            index = self.client_seen[key]
+        else:
+            index = self.client_append(request["event"])
+            if index is None:
+                return None
+            self.client_seen[key] = index
+        return (LAB5_CLIENT_REDIRECT,
+                reply_encode(REPLY_COMMITTED, self.node_id, request["request"], index))
+
+    def routing_table(self):
+        """Distil the committed graph into the routes this node needs.
+
+        :return: Mapping of destination node to (bus, relay, reachable).
+        """
+        return self.net.routing_table(self.node_id)
 
     def on_ack(self, node, data):
         """Step 5 of Figure 2: a follower reports what it has stored.

@@ -72,6 +72,22 @@ struct lab5_append { uint8_t term; uint16_t prev_index; uint8_t prev_term;
  * (TASKS.md D10); the identifier carries which follower it came from.
  */
 struct lab5_ack { uint8_t term; uint16_t match_index; uint8_t result; };
+/** @brief A client asking the leader to record one event.
+ *
+ * Wire layout: byte 0 the event, bytes 1..2 a request id the client chooses so
+ * it can match the reply. The identifier says which node asked.
+ */
+struct lab5_client { uint8_t event; uint16_t request; };
+/** @brief The leader's reply to a client, carrying either a commit or a redirect.
+ *
+ * Wire layout: byte 0 the result, byte 1 the node believed to be leader,
+ * bytes 2..3 the request id, bytes 4..5 the index the entry was given. A client
+ * that reached a follower gets LAB5_REPLY_REDIRECT naming the leader, which is
+ * step 6 of the write path failing closed rather than silently.
+ */
+struct lab5_reply { uint8_t result; uint8_t leader; uint16_t request; uint16_t index; };
+/** @brief Reply results. */
+enum lab5_reply_result { LAB5_REPLY_COMMITTED = 0, LAB5_REPLY_REDIRECT = 1 };
 /** @brief Largest offset from LAB5_EPOCH_US the 48 bit REF field can carry. */
 #define LAB5_REF_US_MAX 0xffffffffffffULL
 /** @brief Central timing choices in milliseconds; recovery is measured separately. */
@@ -134,6 +150,26 @@ void lab5_ack_encode(uint8_t data[8], const struct lab5_ack *ack);
  * @return Decoded fields.
  */
 struct lab5_ack lab5_ack_decode(const uint8_t data[8]);
+/** @brief Encode a client request.
+ * @param data Eight bytes to fill.
+ * @param request Fields to encode.
+ */
+void lab5_client_encode(uint8_t data[8], const struct lab5_client *request);
+/** @brief Decode a client request.
+ * @param data Eight received bytes.
+ * @return Decoded fields.
+ */
+struct lab5_client lab5_client_decode(const uint8_t data[8]);
+/** @brief Encode a leader reply.
+ * @param data Eight bytes to fill.
+ * @param reply Fields to encode.
+ */
+void lab5_reply_encode(uint8_t data[8], const struct lab5_reply *reply);
+/** @brief Decode a leader reply.
+ * @param data Eight received bytes.
+ * @return Decoded fields.
+ */
+struct lab5_reply lab5_reply_decode(const uint8_t data[8]);
 /** @brief Build a per-node Lab 5 identifier.
  * @param base One of the LAB5_*_BASE values.
  * @param node Node ID from enum lab_node.

@@ -19,7 +19,7 @@ from can_check import discover
 from cluster_config import load as load_cluster_config, node_id as cluster_node_id
 from raft_agent import RaftAgent
 from network_state import event_link, event_node
-from protocol import lab5_id_for
+from protocol import APPEND_ACK_BASE as _ACK, CLIENT_REQ_BASE, lab5_id_for
 
 
 def catalog_filters():
@@ -166,12 +166,17 @@ class Cockpit:
         :param data: Eight received bytes.
         :param now: Monotonic time from the caller's loop.
         """
-        for node in self.cluster["nodes"] and range(1, self.cluster["N"] + 1):
+        for node in range(1, self.cluster["N"] + 1):
             if can_id == lab5_id_for(APPEND_ACK_BASE, node):
                 if self.agent.on_ack(node, data):
                     self.show_raft_state()
                 return
-        # REF and APPEND from ourselves return on the other bus; ignore them.
+            if can_id == lab5_id_for(CLIENT_REQ_BASE, node):
+                reply = self.agent.on_client_request(node, data)
+                if reply is not None:
+                    self.send_lab5(*reply)
+                return
+        # REF, APPEND and our own replies return on the other bus; ignore them.
 
     def show_raft_state(self):
         """Drive the LEADER and SYNC indicators from the agent's role.

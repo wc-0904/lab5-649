@@ -198,6 +198,66 @@ struct lab5_ack lab5_ack_decode(const uint8_t data[8])
 	return ack;
 }
 
+/** @brief Encode a client request.
+ * @param data Eight bytes to fill.
+ * @param request Fields to encode.
+ */
+void lab5_client_encode(uint8_t data[8], const struct lab5_client *request)
+{
+	data[0] = request->event;
+	data[1] = (uint8_t)request->request;
+	data[2] = (uint8_t)(request->request >> 8);
+	for (int i = 3; i < 8; i++) {
+		data[i] = 0;
+	}
+}
+
+/** @brief Decode a client request.
+ * @param data Eight received bytes.
+ * @return Decoded fields.
+ */
+struct lab5_client lab5_client_decode(const uint8_t data[8])
+{
+	struct lab5_client request = {
+		.event = data[0],
+		.request = (uint16_t)((uint16_t)data[1] | ((uint16_t)data[2] << 8)),
+	};
+
+	return request;
+}
+
+/** @brief Encode a leader reply.
+ * @param data Eight bytes to fill.
+ * @param reply Fields to encode.
+ */
+void lab5_reply_encode(uint8_t data[8], const struct lab5_reply *reply)
+{
+	data[0] = reply->result;
+	data[1] = reply->leader;
+	data[2] = (uint8_t)reply->request;
+	data[3] = (uint8_t)(reply->request >> 8);
+	data[4] = (uint8_t)reply->index;
+	data[5] = (uint8_t)(reply->index >> 8);
+	data[6] = 0;
+	data[7] = 0;
+}
+
+/** @brief Decode a leader reply.
+ * @param data Eight received bytes.
+ * @return Decoded fields.
+ */
+struct lab5_reply lab5_reply_decode(const uint8_t data[8])
+{
+	struct lab5_reply reply = {
+		.result = data[0],
+		.leader = data[1],
+		.request = (uint16_t)((uint16_t)data[2] | ((uint16_t)data[3] << 8)),
+		.index = (uint16_t)((uint16_t)data[4] | ((uint16_t)data[5] << 8)),
+	};
+
+	return reply;
+}
+
 /** @brief Build a per-node Lab 5 identifier.
  * @param base One of the LAB5_*_BASE values.
  * @param node Node ID from enum lab_node.

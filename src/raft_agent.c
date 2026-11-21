@@ -37,6 +37,18 @@
  * SYNC goes out at the moment an election would start rather than lingering.
  */
 #define SYNC_TIMEOUT_MS (LAB5_CFG_MISSED_HEARTBEATS * LAB5_CFG_HEARTBEAT_MS)
+/** @brief How long a link state must hold before it is reported, milliseconds.
+ *
+ * A jumper pull is mechanically noisy and the controller crosses error passive
+ * on its way to bus off, so an undebounced report puts several entries in the
+ * log for one physical change. Checkoff step 4 wants exactly one entry per
+ * change at the same index on every node, so the state has to settle first
+ * (TASKS.md D16). Three monitor periods, well inside the 100 ms the Lab 3
+ * recovery requirement allows.
+ */
+#define LINK_DEBOUNCE_MS 60
+/** @brief Resend period for a client request the leader has not acted on. */
+#define CLIENT_RETRY_MS 200
 
 static struct {
 	enum raft_role role;
@@ -53,6 +65,15 @@ static struct {
 	struct raft_log log;
 	struct network net;
 	uint32_t commit_index;
+	/* Client: this node's own view of its two links. */
+	bool link_down[2];
+	bool link_known[2];
+	bool link_candidate[2];
+	int64_t link_changed_ms[2];
+	uint8_t pending_event;
+	uint16_t pending_request;
+	int64_t pending_sent_ms;
+	uint16_t next_request;
 } state;
 static struct k_spinlock state_lock;
 
@@ -286,6 +307,116 @@ void raft_on_append(const uint8_t data[8])
 	} else if (result != RAFT_APPEND_ACCEPTED) {
 		printk("raft: append rejected result=%d prev=%u match=%u\n",
 		       (int)result, header.prev_index, match);
+	}
+}
+
+/** @brief Send the pending client request to the leader.
+ *
+ * Called with the lock released. The leader appends and replicates; the client
+ * learns the outcome either from the reply or from seeing its own entry commit.
+ * @param event Event to record.
+ * @param request Request id to match the reply.
+ */
+static void send_client_request(uint8_t event, uint16_t request)
+{
+	struct lab5_client payload = {.event = event, .request = request};
+	uint8_t data[8];
+
+	lab5_client_encode(data, &payload);
+	lab_can_send_lab5(lab5_id_for(LAB5_CLIENT_REQ_BASE, LAB_NODE_ID), data);
+	if (LAB5_CFG_DEBUG) {
+		printk("raft: client req=%u %s\n", request, raft_event_name(event));
+	}
+}
+
+/** @brief Poll this node's own links and report any confirmed change.
+ * @param now_ms Current uptime in milliseconds.
+ */
+void raft_client_poll(int64_t now_ms)
+{
+	uint8_t event = RAFT_EVENT_NONE;
+	uint16_t request = 0;
+	bool retry = false;
+
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+
+	for (int bus = 0; bus < 2; bus++) {
+		bool down = lab_can_link_down(bus);
+
+		if (!state.link_known[bus]) {
+			/* First poll: adopt the state without reporting it. */
+			state.link_known[bus] = true;
+			state.link_down[bus] = down;
+			state.link_candidate[bus] = down;
+			continue;
+		}
+		if (down != state.link_candidate[bus]) {
+			state.link_candidate[bus] = down;
+			state.link_changed_ms[bus] = now_ms;
+			continue;
+		}
+		if (down == state.link_down[bus] ||
+		    now_ms - state.link_changed_ms[bus] < LINK_DEBOUNCE_MS) {
+			continue;
+		}
+		/* Settled and different: this is one real change to report. */
+		state.link_down[bus] = down;
+		if (state.pending_event == RAFT_EVENT_NONE) {
+			state.pending_event = raft_event_link(LAB_NODE_ID, bus + 1, !down);
+			state.pending_request = ++state.next_request;
+			state.pending_sent_ms = now_ms;
+			event = state.pending_event;
+			request = state.pending_request;
+		}
+	}
+	if (event == RAFT_EVENT_NONE && state.pending_event != RAFT_EVENT_NONE &&
+	    now_ms - state.pending_sent_ms >= CLIENT_RETRY_MS) {
+		/* The leader never acted on it: ask again rather than drop it. */
+		state.pending_sent_ms = now_ms;
+		event = state.pending_event;
+		request = state.pending_request;
+		retry = true;
+	}
+	k_spin_unlock(&state_lock, key);
+
+	if (event != RAFT_EVENT_NONE) {
+		ARG_UNUSED(retry);
+		send_client_request(event, request);
+	}
+}
+
+/** @brief Apply a leader reply to a client request.
+ * @param data Eight received bytes.
+ */
+void raft_on_reply(const uint8_t data[8])
+{
+	struct lab5_reply reply = lab5_reply_decode(data);
+	bool matched = false;
+	bool redirect = reply.result == LAB5_REPLY_REDIRECT;
+
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+
+	if (state.pending_event != RAFT_EVENT_NONE &&
+	    reply.request == state.pending_request) {
+		matched = true;
+		if (!redirect) {
+			/* Step 6: the leader acknowledged the write. */
+			state.pending_event = RAFT_EVENT_NONE;
+		}
+	}
+	if (redirect && reply.leader != 0) {
+		state.leader = reply.leader;
+	}
+	k_spin_unlock(&state_lock, key);
+
+	if (matched && LAB5_CFG_DEBUG) {
+		if (redirect) {
+			printk("raft: redirected to %s, retrying req=%u\n",
+			       lab_node_name(reply.leader), reply.request);
+		} else {
+			printk("raft: client ack req=%u idx=%u\n", reply.request,
+			       reply.index);
+		}
 	}
 }
 

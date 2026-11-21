@@ -186,6 +186,54 @@ bool network_link_up(const struct network *net, int node, int bus)
 	return bit != 0 && network_node_up(net, node) && (net->links & bit) != 0;
 }
 
+/** @brief Work out how one node reaches another from the committed graph.
+ * @param net Graph to read.
+ * @param from Sending node ID.
+ * @param to Destination node ID.
+ * @return Route; reachable is false when no path exists.
+ */
+struct network_route network_route_to(const struct network *net, int from, int to)
+{
+	struct network_route route = {.bus = 0, .relay = 0, .reachable = false};
+
+	if (from == to || !network_node_up(net, from) || !network_node_up(net, to)) {
+		return route;
+	}
+	for (int bus = 1; bus <= NETWORK_BUSES; bus++) {
+		if (network_link_up(net, from, bus) && network_link_up(net, to, bus)) {
+			route.bus = bus;
+			route.reachable = true;
+			return route;
+		}
+	}
+	/* No shared bus: look for one node that bridges the two. */
+	for (int relay = 1; relay <= NETWORK_NODES; relay++) {
+		if (relay == from || relay == to || !network_node_up(net, relay)) {
+			continue;
+		}
+		int in = 0;
+		int out = 0;
+
+		for (int bus = 1; bus <= NETWORK_BUSES; bus++) {
+			if (in == 0 && network_link_up(net, from, bus) &&
+			    network_link_up(net, relay, bus)) {
+				in = bus;
+			}
+			if (network_link_up(net, relay, bus) &&
+			    network_link_up(net, to, bus)) {
+				out = bus;
+			}
+		}
+		if (in != 0 && out != 0) {
+			route.bus = in;
+			route.relay = relay;
+			route.reachable = true;
+			return route;
+		}
+	}
+	return route;
+}
+
 /** @brief Render the graph as one comparable line.
  * @param net Graph to render.
  * @param out Destination buffer.

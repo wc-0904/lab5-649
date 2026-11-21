@@ -295,7 +295,35 @@ sight of its heartbeat. Link detection, debounce and the redirect are P5.
 | 4.5 | Catch-up for a rejoining node, from **D11** | `raft_agent.c` | A node restarted mid-run converges to the same log |
 | 4.6 | Check the commit path against the watchdog, from **D30** | `lab_tasks.c` | A client blocking until commit never trips `iwdg` |
 
-### P5. Client, link detection and routing, checkoff step 4
+### P5. Client, link detection and routing, checkoff step 4  [IMPLEMENTED, not yet on hardware]
+
+Settled here:
+
+- **D15, who reports a link change: owner-reports-own-links.** Each node reports
+  only its own two links, so one physical change produces exactly one entry,
+  which is what checkoff step 4 demands. A follower cannot append, so it sends a
+  client request to the leader; the leader appends and replicates.
+- **D16, detection and debounce.** Detection reads the node's **own** controller
+  error state through `can_get_state()`, not the absence of peer traffic, so it
+  answers "is my branch connected" rather than "is anyone talking". Pulling a
+  node's jumper leaves its transceiver unacknowledged, driving the controller
+  error passive and then bus off. A change must hold **60 ms**, three monitor
+  periods, before it is reported; undebounced, one jumper pull puts several
+  entries in the log because the controller crosses error passive on the way to
+  bus off.
+- **Duplicate suppression.** The bus relays, so the leader sees each client
+  request two to four times. Requests are keyed by (node, request id) and
+  answered from the recorded index rather than appended again.
+- **Redirect.** A client reaching a follower gets `LAB5_REPLY_REDIRECT` naming
+  the leader, so the write path fails closed rather than silently. `0x054`
+  carries both the redirect and the commit acknowledgement, distinguished by
+  the result byte.
+- **Routing.** `network_route_to()` prefers a bus both ends are on, else finds a
+  single node bridging them, which is the relayed hop of Part 5.2. Lowest
+  numbered bus and relay win, so every node derives the same table from the same
+  log. Verified against Lab 3 R4.8 scenario (c): with N1 off B and N3 off A, both
+  directions relay through N2.
+
 
 | # | Task | Where | Done when |
 |---|---|---|---|

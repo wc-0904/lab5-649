@@ -284,6 +284,60 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(mine.render(), theirs.render())
         self.assertEqual(mine.render(), "net nodes=CS. links=12.... mode=OK")
 
+    def test_a_follower_redirects_a_client_to_the_leader(self):
+        from network_state import event_link
+        from raft_agent import LAB5_CLIENT_REDIRECT, REPLY_REDIRECT, client_encode, reply_decode
+        agent, _ = self.agent("steering")
+        reply = agent.on_client_request(3, client_encode(event_link(3, 1, False), 7))
+        self.assertIsNotNone(reply)
+        can_id, data = reply
+        self.assertEqual(can_id, LAB5_CLIENT_REDIRECT)
+        decoded = reply_decode(data)
+        self.assertEqual(decoded["result"], REPLY_REDIRECT)
+        self.assertEqual(decoded["leader"], 1)
+        self.assertEqual(decoded["request"], 7)
+        # A follower must not append on a client's behalf.
+        self.assertEqual(agent.log.last_index(), 0)
+
+    def test_the_leader_appends_a_client_request_and_acknowledges_it(self):
+        from network_state import event_link, event_name
+        from raft_agent import REPLY_COMMITTED, client_encode, reply_decode
+        agent, _ = self.agent("cockpit")
+        _, data = agent.on_client_request(2, client_encode(event_link(2, 1, False), 4))
+        decoded = reply_decode(data)
+        self.assertEqual(decoded["result"], REPLY_COMMITTED)
+        self.assertEqual((decoded["request"], decoded["index"]), (4, 1))
+        self.assertEqual(agent.log.last_index(), 1)
+        self.assertEqual(event_name(agent.log.get(1)[1]), "CANLINK_steering_1_DOWN")
+
+    def test_a_duplicate_client_request_does_not_append_twice(self):
+        # This bus relays, so the leader sees each request two to four times.
+        # Checkoff step 4 wants exactly one entry per change.
+        from network_state import event_link
+        from raft_agent import client_encode, reply_decode
+        agent, _ = self.agent("cockpit")
+        request = client_encode(event_link(2, 1, False), 4)
+        first = reply_decode(agent.on_client_request(2, request)[1])
+        second = reply_decode(agent.on_client_request(2, request)[1])
+        self.assertEqual(first["index"], second["index"])
+        self.assertEqual(agent.log.last_index(), 1)
+
+    def test_two_nodes_reporting_different_links_both_get_entries(self):
+        from network_state import event_link
+        from raft_agent import client_encode
+        agent, _ = self.agent("cockpit")
+        agent.on_client_request(2, client_encode(event_link(2, 1, False), 1))
+        agent.on_client_request(3, client_encode(event_link(3, 2, False), 1))
+        # Same request id from different nodes must not collide.
+        self.assertEqual(agent.log.last_index(), 2)
+
+    def test_client_and_reply_round_trip(self):
+        from raft_agent import client_decode, client_encode, reply_decode, reply_encode
+        self.assertEqual(client_decode(client_encode(0x2A, 1234)),
+                         {"event": 0x2A, "request": 1234})
+        self.assertEqual(reply_decode(reply_encode(1, 3, 1234, 30000)),
+                         {"result": 1, "leader": 3, "request": 1234, "index": 30000})
+
     def test_empty_append_carries_no_entries(self):
         agent, sent = self.agent("cockpit")
         agent.append_tx(0)

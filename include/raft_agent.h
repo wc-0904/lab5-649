@@ -63,6 +63,19 @@ void raft_agent_tick(int64_t now_ms);
  * @param data Eight received bytes.
  */
 void raft_on_append(const uint8_t data[8]);
+/** @brief Poll this node's own links and report any confirmed change.
+ *
+ * Owner-reports-own-links (TASKS.md D15): each node reports only its own two
+ * links, so one physical change produces exactly one log entry, which is what
+ * checkoff step 4 requires. A change must hold for LINK_DEBOUNCE_MS before it
+ * is reported, or a jumper pull chatters several entries into the log (D16).
+ * @param now_ms Current uptime in milliseconds.
+ */
+void raft_client_poll(int64_t now_ms);
+/** @brief Apply a leader reply to a client request.
+ * @param data Eight received bytes.
+ */
+void raft_on_reply(const uint8_t data[8]);
 /** @brief Render the committed network graph for the console.
  *
  * The demo compares this line across the three consoles, so it must match the

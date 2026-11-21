@@ -87,6 +87,25 @@ bool network_node_up(const struct network *net, int node);
  * @return True when the node is up and that link is up.
  */
 bool network_link_up(const struct network *net, int node, int bus);
+/** @brief One destination's entry in a node's routing table.
+ *
+ * With three nodes and two buses the table is this small: either a bus to send
+ * on directly, or a node to relay through. Part 5.1 says each node distils the
+ * graph into the subset it needs, and this is that subset.
+ */
+struct network_route { int bus; int relay; bool reachable; };
+/** @brief Work out how one node reaches another from the committed graph.
+ *
+ * Prefers a bus both ends are on. Failing that, looks for a single node that
+ * shares a bus with each end, which is the relayed hop of Part 5.2; with three
+ * nodes one hop always suffices. The lowest numbered bus and relay are chosen
+ * so every node derives the same table from the same log.
+ * @param net Graph to read.
+ * @param from Sending node ID.
+ * @param to Destination node ID.
+ * @return Route; reachable is false when no path exists.
+ */
+struct network_route network_route_to(const struct network *net, int from, int to);
 /** @brief Render the graph as one comparable line.
  *
  * Format: "net nodes=CSD links=c1c2s1s2d1d2 mode=OK", where each node position
