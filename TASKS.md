@@ -237,7 +237,22 @@ spans C firmware and Python.
 | 3.3 | Printable `getNetwork()` | same | Three consoles can be compared side by side at the demo |
 | 3.4 | Host unit tests for replay determinism and for the encoding round trip | `tests/` | Extends the existing 21 passing cases, all green |
 
-### P4. Replication, commit and catch-up  [IMPLEMENTED, not yet on hardware]
+### P4. Replication, commit and catch-up  [DONE, verified on hardware 2026-11-20]
+
+Verified on the bench. The leader appended five bootstrap entries and committed
+all five. Both Nucleos printed the same five `store idx=N term=1 EVENT` lines in
+the same order at the same indices, then converged to the identical graph:
+
+```
+raft: commit idx=5 net nodes=CSD links=12.... mode=OK
+```
+
+character for character on all three nodes. That is Part 4's determinism
+requirement shown on hardware across a heterogeneous cluster, and it is also the
+artifact checkoff step 4 compares: one entry per change, at the same index, on
+every console. Commit riding one index behind store is correct, since the leader
+cannot commit until a majority acknowledges and the new commit index travels on
+the next AppendEntries.
 
 Settled here:
 
