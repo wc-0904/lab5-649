@@ -63,6 +63,15 @@ struct lab5_append { uint8_t term; uint16_t prev_index; uint8_t prev_term;
  * then some. Both endpoints must use this same constant.
  */
 #define LAB5_EPOCH_US 1767225600000000ULL
+/** @brief Decoded AppendEntries acknowledgement.
+ *
+ * Wire layout, little endian: byte 0 the follower's term, bytes 1..2 the
+ * highest index it now matches the leader on, byte 3 the outcome from
+ * enum raft_append_result. A CAN frame ack only means someone heard the frame,
+ * so step 5 of the client write path needs this separate frame per follower
+ * (TASKS.md D10); the identifier carries which follower it came from.
+ */
+struct lab5_ack { uint8_t term; uint16_t match_index; uint8_t result; };
 /** @brief Largest offset from LAB5_EPOCH_US the 48 bit REF field can carry. */
 #define LAB5_REF_US_MAX 0xffffffffffffULL
 /** @brief Central timing choices in milliseconds; recovery is measured separately. */
@@ -115,6 +124,16 @@ void lab5_append_encode(uint8_t data[8], const struct lab5_append *header);
  * @return Decoded fields.
  */
 struct lab5_append lab5_append_decode(const uint8_t data[8]);
+/** @brief Encode an AppendEntries acknowledgement.
+ * @param data Eight bytes to fill.
+ * @param ack Fields to encode.
+ */
+void lab5_ack_encode(uint8_t data[8], const struct lab5_ack *ack);
+/** @brief Decode an AppendEntries acknowledgement.
+ * @param data Eight received bytes.
+ * @return Decoded fields.
+ */
+struct lab5_ack lab5_ack_decode(const uint8_t data[8]);
 /** @brief Build a per-node Lab 5 identifier.
  * @param base One of the LAB5_*_BASE values.
  * @param node Node ID from enum lab_node.

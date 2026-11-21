@@ -207,6 +207,83 @@ class AgentTests(unittest.TestCase):
         self.assertAlmostEqual(agent.ref_timer.deadline(), .080, places=9)
         self.assertEqual(agent.ref_timer.skipped, 1)
 
+    def test_a_majority_commits_and_a_minority_does_not(self):
+        from network_state import RaftLog, event_node
+        from raft_agent import ack_encode
+        agent, _ = self.agent("cockpit")
+        index = agent.client_append(event_node(1, True))
+        self.assertEqual(index, 1)
+        self.assertEqual(agent.commit_index, 0)      # step 2 only; not committed
+        # One follower stores it. With N=3 a majority is 2, counting the leader.
+        agent.on_ack(2, ack_encode(1, 1, 0))
+        self.assertEqual(agent.commit_index, 1)      # commit, between steps 5 and 6
+
+    def test_one_ack_from_a_three_node_cluster_is_not_a_majority_without_the_leader(self):
+        from network_state import event_node
+        from raft_agent import ack_encode
+        agent, _ = self.agent("cockpit")
+        agent.client_append(event_node(1, True))
+        agent.client_append(event_node(2, True))
+        # The leader holds both, one follower holds only the first.
+        agent.on_ack(2, ack_encode(1, 1, 0))
+        self.assertEqual(agent.commit_index, 1)
+        agent.on_ack(3, ack_encode(1, 2, 0))
+        self.assertEqual(agent.commit_index, 2)
+
+    def test_a_rejection_backs_the_follower_up(self):
+        from network_state import event_node
+        from raft_agent import ack_encode
+        agent, _ = self.agent("cockpit")
+        for node in (1, 2, 3):
+            agent.client_append(event_node(node, True))
+        agent.next_index[2] = 4
+        agent.on_ack(2, ack_encode(1, 0, 2))         # MISSING
+        self.assertEqual(agent.next_index[2], 3)
+        self.assertEqual(agent.commit_index, 0)
+
+    def test_the_header_is_built_for_the_furthest_behind_follower(self):
+        from network_state import event_node
+        from raft_agent import append_decode
+        agent, _ = self.agent("cockpit")
+        for node in (1, 2, 3):
+            agent.client_append(event_node(node, True))
+        agent.next_index[2] = 3
+        agent.next_index[3] = 1
+        header = append_decode(agent.append_payload())
+        # Node 3 is furthest behind, so prevLogIndex is 0 and entry 1 is carried.
+        self.assertEqual(header["prev_index"], 0)
+        self.assertEqual(header["count"], 1)
+
+    def test_a_follower_catches_up_and_both_reach_the_same_graph(self):
+        from network_state import (APPEND_ACCEPTED, Network, RaftLog, event_link,
+                                   event_node)
+        from raft_agent import append_decode
+        agent, _ = self.agent("cockpit")
+        for event in (event_node(1, True), event_link(1, 1, True),
+                      event_link(1, 2, True), event_node(2, True)):
+            agent.client_append(event)
+
+        follower = RaftLog()
+        # Replicate one entry per round, as the 100 ms append does on the wire.
+        for _ in range(10):
+            header = append_decode(agent.append_payload())
+            outcome, match = follower.accept(
+                1, header["term"], header["prev_index"], header["prev_term"],
+                header["count"], header["event"])
+            self.assertEqual(outcome, APPEND_ACCEPTED)
+            agent.next_index[2] = match + 1
+            agent.match_index[2] = match
+            agent.next_index[3] = match + 1
+            agent.match_index[3] = match
+            agent.advance_commit()
+        self.assertEqual(follower.last_index(), 4)
+        self.assertEqual(agent.commit_index, 4)
+        mine, theirs = Network(), Network()
+        mine.replay(agent.log, agent.commit_index)
+        theirs.replay(follower, agent.commit_index)
+        self.assertEqual(mine.render(), theirs.render())
+        self.assertEqual(mine.render(), "net nodes=CS. links=12.... mode=OK")
+
     def test_empty_append_carries_no_entries(self):
         agent, sent = self.agent("cockpit")
         agent.append_tx(0)

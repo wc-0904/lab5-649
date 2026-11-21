@@ -6,6 +6,7 @@
  */
 #include "raft_agent.h"
 #include "cluster_config.h"
+#include "lab_can.h"
 #include "lab_io.h"
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
@@ -49,6 +50,9 @@ static struct {
 	int64_t last_gap_report_ms;
 	struct lab5_ref last;
 	uint64_t last_local_us;
+	struct raft_log log;
+	struct network net;
+	uint32_t commit_index;
 } state;
 static struct k_spinlock state_lock;
 
@@ -62,6 +66,9 @@ void raft_agent_init(void)
 	state.leader = LAB5_CFG_DEFAULT_LEADER;
 	state.term = state.leader != 0 ? BOOT_TERM : 0;
 	state.role = state.leader == LAB_NODE_ID ? RAFT_LEADER : RAFT_FOLLOWER;
+	raft_log_init(&state.log);
+	network_reset(&state.net);
+	state.commit_index = 0;
 	k_spin_unlock(&state_lock, key);
 
 	lab_io_set(LAB_LEADER, state.role == RAFT_LEADER);
@@ -206,6 +213,91 @@ void raft_agent_tick(int64_t now_ms)
 	if (LAB5_CFG_DEBUG) {
 		printk("raft: lost SYNC, no REF for %d ms\n", SYNC_TIMEOUT_MS);
 	}
+}
+
+/** @brief Apply a received AppendEntries and acknowledge it.
+ * @param data Eight received bytes.
+ */
+void raft_on_append(const uint8_t data[8])
+{
+	struct lab5_append header = lab5_append_decode(data);
+	struct lab5_ack ack;
+	uint32_t match = 0;
+	uint32_t committed = 0;
+	bool advanced = false;
+	enum raft_append_result result;
+	char line[NETWORK_PRINT_SIZE];
+
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+
+	/* A newer term means a new leader; adopt it and follow. */
+	if (header.term > state.term) {
+		state.term = header.term;
+		state.role = RAFT_FOLLOWER;
+		state.leader = 0;
+	}
+	result = raft_log_accept(&state.log, (uint8_t)state.term, header.term,
+				 header.prev_index, header.prev_term, header.count,
+				 header.event, &match);
+	if (result == RAFT_APPEND_ACCEPTED) {
+		/* Commit no further than what we actually hold. */
+		uint32_t limit = raft_log_last_index(&state.log);
+		uint32_t target = header.commit < limit ? header.commit : limit;
+
+		if (target > state.commit_index) {
+			state.commit_index = target;
+			network_replay(&state.net, &state.log, state.commit_index);
+			advanced = true;
+		}
+	}
+	committed = state.commit_index;
+	ack.term = (uint8_t)state.term;
+	ack.match_index = (uint16_t)match;
+	ack.result = (uint8_t)result;
+	network_print(&state.net, line, sizeof(line));
+	k_spin_unlock(&state_lock, key);
+
+	uint8_t reply[8];
+
+	lab5_ack_encode(reply, &ack);
+	lab_can_send_lab5(lab5_id_for(LAB5_APPEND_ACK_BASE, LAB_NODE_ID), reply);
+
+	if (!LAB5_CFG_DEBUG) {
+		return;
+	}
+	/* Required by the Debug config key, and only on a change, so the 100 ms
+	 * empty append does not print forever.
+	 */
+	if (advanced) {
+		printk("raft: commit idx=%u %s\n", committed, line);
+	} else if (result != RAFT_APPEND_ACCEPTED) {
+		printk("raft: append rejected result=%d prev=%u match=%u\n",
+		       (int)result, header.prev_index, match);
+	}
+}
+
+/** @brief Render the committed network graph for the console.
+ * @param out Destination buffer.
+ * @param size Size of out, at least NETWORK_PRINT_SIZE.
+ */
+void raft_network_print(char *out, size_t size)
+{
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+
+	network_print(&state.net, out, size);
+	k_spin_unlock(&state_lock, key);
+}
+
+/** @brief Report the highest committed index.
+ * @return Commit index, or 0 when nothing is committed.
+ */
+uint32_t raft_commit_index(void)
+{
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+	uint32_t index = state.commit_index;
+
+	k_spin_unlock(&state_lock, key);
+	return index;
 }
 
 /** @brief Read the most recent reference.

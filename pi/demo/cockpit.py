@@ -10,19 +10,33 @@ import struct
 import sys
 import time
 
-from protocol import (CTRL, FAULT, HB1, HB2, HB3, BLINK, FORCE, CATALOG, FAULT_IDS,
+from protocol import (APPEND, APPEND_ACK_BASE, LAB5_FILTER_ID, LAB5_FILTER_MASK,
+                      REF, is_consensus,
+                      CTRL, FAULT, HB1, HB2, HB3, BLINK, FORCE, CATALOG, FAULT_IDS,
                       CAN_FRAME, Dedup, payload, valid, decode_wheel, origin)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "part0"))
 from can_check import discover
 from cluster_config import load as load_cluster_config, node_id as cluster_node_id
 from raft_agent import RaftAgent
+from network_state import event_link, event_node
+from protocol import lab5_id_for
 
 
 def catalog_filters():
-    """Subscribe to exact standard data IDs, excluding extended and RTR frames."""
+    """Subscribe to the Lab 3 catalog and the Lab 5 range, excluding EFF and RTR.
+
+    The Lab 3 identifiers are matched exactly. The eleven Lab 5 consensus
+    identifiers are matched as one range, the same way the firmware does it, so
+    the leader receives every follower's acknowledgement without a filter each.
+    REF gets its own exact filter because it sits below LAB_CTRL, outside that
+    range.
+    """
     # CAN_EFF_FLAG | CAN_RTR_FLAG | CAN_SFF_MASK. CAN_ERR_FLAG must stay clear:
     # Linux treats a mask containing it as an error subscription, not a data filter.
-    return b"".join(struct.pack("=II", can_id, 0xC00007FF) for can_id in CATALOG)
+    exact = [(can_id, 0xC00007FF) for can_id in CATALOG]
+    exact.append((REF, 0xC00007FF))
+    exact.append((LAB5_FILTER_ID, 0xC0000000 | LAB5_FILTER_MASK))
+    return b"".join(struct.pack("=II", can_id, mask) for can_id, mask in exact)
 
 
 class Pins:
@@ -83,6 +97,13 @@ class Cockpit:
                  self.cluster["default_leader"]), flush=True)
         print(self.agent.summary(), flush=True)
         self.show_raft_state()
+        # Bootstrap the log with what the leader knows about itself. Link and
+        # node detection for the peers is P5; this is enough for the entries to
+        # replicate and commit.
+        self.seen_nodes = {self.agent.node_id}
+        self.agent.client_append(event_node(self.agent.node_id, True))
+        for bus in (1, 2):
+            self.agent.client_append(event_link(self.agent.node_id, bus, True))
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp.setblocking(False)
         self.udp.bind((args.bind, args.port))
@@ -135,6 +156,22 @@ class Cockpit:
         self.sequence[can_id] = (self.sequence[can_id] + 1) & 15
         frame = CAN_FRAME.pack(can_id, 8, data)
         return sum(self.write_bus(bus, frame) for bus in (0, 1))
+
+    def receive_lab5(self, can_id, data, now):
+        """Hand a Lab 5 frame to the agent.
+
+        Runs in the event loop beside the Lab 3 receive path, so nothing here
+        may block; the agent only updates counters and indices.
+        :param can_id: Lab 5 identifier.
+        :param data: Eight received bytes.
+        :param now: Monotonic time from the caller's loop.
+        """
+        for node in self.cluster["nodes"] and range(1, self.cluster["N"] + 1):
+            if can_id == lab5_id_for(APPEND_ACK_BASE, node):
+                if self.agent.on_ack(node, data):
+                    self.show_raft_state()
+                return
+        # REF and APPEND from ourselves return on the other bus; ignore them.
 
     def show_raft_state(self):
         """Drive the LEADER and SYNC indicators from the agent's role.
@@ -254,13 +291,26 @@ class Cockpit:
             self.bad_frames += 1
             return
         can_id, length, data = CAN_FRAME.unpack(raw)
-        if length != 8 or not valid(can_id, data):
+        if length != 8:
+            self.bad_frames += 1
+            return
+        if can_id == REF or is_consensus(can_id):
+            # Lab 5 traffic: valid() covers the Lab 3 catalog only, so these
+            # would otherwise be counted as malformed.
+            self.receive_lab5(can_id, data, now)
+            return
+        if not valid(can_id, data):
             self.bad_frames += 1
             return
         if origin(can_id, data) == 1:
             return  # Returning copies of our own traffic must never be relayed.
         if can_id in (HB2, HB3):
+            peer = can_id - HB1 + 1
             self.heartbeat[can_id - HB1][bus] = now
+            if peer not in self.seen_nodes:
+                # First sight of a peer: record it so the graph is not empty.
+                self.seen_nodes.add(peer)
+                self.agent.client_append(event_node(peer, True))
         if self.dedup.duplicate(can_id, data, bus, now):
             return
         self.forward(can_id, data, bus)

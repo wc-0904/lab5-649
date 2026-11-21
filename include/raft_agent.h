@@ -5,6 +5,9 @@
 #ifndef RAFT_AGENT_H_
 #define RAFT_AGENT_H_
 #include "lab_protocol.h"
+#include "network_state.h"
+#include "raft_log.h"
+#include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
 /** @brief Raft role of this node. */
@@ -51,6 +54,27 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us);
  * @param now_ms Current uptime in milliseconds.
  */
 void raft_agent_tick(int64_t now_ms);
+/** @brief Apply a received AppendEntries and acknowledge it.
+ *
+ * Runs in the dispatch thread. Performs the consistency check, adopts a newer
+ * term, advances the commit index, replays the state machine through it, and
+ * sends this node's acknowledgement. Step 5 of the client write path needs its
+ * own frame because a CAN frame ack only means someone heard it.
+ * @param data Eight received bytes.
+ */
+void raft_on_append(const uint8_t data[8]);
+/** @brief Render the committed network graph for the console.
+ *
+ * The demo compares this line across the three consoles, so it must match the
+ * Pi's rendering character for character.
+ * @param out Destination buffer.
+ * @param size Size of out, at least NETWORK_PRINT_SIZE.
+ */
+void raft_network_print(char *out, size_t size);
+/** @brief Report the highest committed index.
+ * @return Commit index, or 0 when nothing is committed.
+ */
+uint32_t raft_commit_index(void);
 /** @brief Read the most recent reference, for the console and later phases.
  * @param ref Destination for the last decoded REF.
  * @param local_us Destination for the local clock at that receipt.

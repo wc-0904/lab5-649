@@ -237,7 +237,39 @@ spans C firmware and Python.
 | 3.3 | Printable `getNetwork()` | same | Three consoles can be compared side by side at the demo |
 | 3.4 | Host unit tests for replay determinism and for the encoding round trip | `tests/` | Extends the existing 21 passing cases, all green |
 
-### P4. Replication, commit and catch-up
+### P4. Replication, commit and catch-up  [IMPLEMENTED, not yet on hardware]
+
+Settled here:
+
+- **D10, acks.** A CAN frame ack only means someone heard the frame, so each
+  follower sends its own `APPEND_ACK` frame carrying its term, its match index
+  and the outcome. The identifier says which follower it came from, so the
+  payload does not have to.
+- **One broadcast APPEND, built for the furthest behind follower.** There is a
+  single `0x040`, so the header cannot differ per follower; the leader uses the
+  minimum `nextIndex`. Followers already holding that entry accept it
+  idempotently, which is exactly why `raft_log_accept()` was written to be
+  idempotent. On this bus every append arrives two to four times anyway, once
+  per bus plus relayed copies, so that property was needed regardless.
+- **Append cadence.** Empty `APPEND` every 100 ms when idle, which is what
+  checkoff step 2 measures. While a follower is behind, the leader also sends at
+  the heartbeat rate so catch-up is not one entry per 100 ms.
+- **D11, persistence.** Nothing is written to flash. A follower catches up over
+  `AppendEntries`, and `RAFT_APPEND_FORGOTTEN` names the one case that cannot
+  work: `prevLogIndex` having fallen out of the 4096 entry ring, where backing
+  up does not help and a snapshot would be needed. No demo scenario reaches it.
+- **Commit rule.** The highest index stored by a majority **and created in the
+  leader's current term**, which is what stops a later leader committing a
+  predecessor's entry by counting alone.
+
+The Pi subscribed to exactly the seven Lab 3 identifiers, so it could not have
+received any acknowledgement. Its socket filters now carry the same masked
+consensus range the firmware uses, plus an exact filter for REF.
+
+A minimal client bootstraps the log so there is something to replicate: the
+leader records its own node and links at startup, and records each peer on first
+sight of its heartbeat. Link detection, debounce and the redirect are P5.
+
 
 | # | Task | Where | Done when |
 |---|---|---|---|

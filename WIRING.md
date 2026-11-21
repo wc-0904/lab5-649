@@ -107,6 +107,12 @@ boots but behaves strangely.
 | PA2, PA3 | USART2, the ST-LINK console | Do not repurpose |
 | PA13, PA14, PB3 | SWD and SWO | Do not repurpose |
 
+**All six P1 pads are open.** Termination comes entirely from the four discrete
+100+20 ohm networks, two per bus. Seeed ships the pad open and the modules were
+checked; nothing is double-terminated, so there is no soldered-P1 exception to
+identify to the TA. Confirm by measuring about 60 ohms across each rail with
+power off: 40 ohms would mean a third terminator had appeared somewhere.
+
 **PA0 was the Lab 2 left-motor current-sensor input.** If any ACS712 divider output
 is still physically attached to A0, remove it before running firmware that drives
 PA0 as an output.

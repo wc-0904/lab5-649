@@ -204,7 +204,13 @@ static void dispatch_task(void *a, void *b, void *c)
 			finish(DISPATCH, start);
 			continue;
 		}
+		if (id == LAB5_APPEND) {
+			raft_on_append(rx.frame.data);
+			finish(DISPATCH, start);
+			continue;
+		}
 		if (lab5_is_consensus(id)) {
+			/* Acks and votes belong to other nodes or later phases. */
 			finish(DISPATCH, start);
 			continue;
 		}

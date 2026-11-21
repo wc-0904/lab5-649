@@ -167,6 +167,37 @@ struct lab5_append lab5_append_decode(const uint8_t data[8])
 	return header;
 }
 
+/** @brief Encode an AppendEntries acknowledgement.
+ * @param data Eight bytes to fill.
+ * @param ack Fields to encode.
+ */
+void lab5_ack_encode(uint8_t data[8], const struct lab5_ack *ack)
+{
+	data[0] = ack->term;
+	data[1] = (uint8_t)ack->match_index;
+	data[2] = (uint8_t)(ack->match_index >> 8);
+	data[3] = ack->result;
+	data[4] = 0;
+	data[5] = 0;
+	data[6] = 0;
+	data[7] = 0;
+}
+
+/** @brief Decode an AppendEntries acknowledgement.
+ * @param data Eight received bytes.
+ * @return Decoded fields.
+ */
+struct lab5_ack lab5_ack_decode(const uint8_t data[8])
+{
+	struct lab5_ack ack = {
+		.term = data[0],
+		.match_index = (uint16_t)((uint16_t)data[1] | ((uint16_t)data[2] << 8)),
+		.result = data[3],
+	};
+
+	return ack;
+}
+
 /** @brief Build a per-node Lab 5 identifier.
  * @param base One of the LAB5_*_BASE values.
  * @param node Node ID from enum lab_node.

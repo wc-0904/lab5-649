@@ -7,7 +7,9 @@ checks the C and Python layouts against each other.
 import struct
 import time
 
-from protocol import REF, APPEND
+from protocol import APPEND, APPEND_ACK_BASE, REF, lab5_id_for
+from network_state import (APPEND_ACCEPTED, Network, RaftLog,
+                           event_link, event_name, event_node)
 
 #: Roles a node can hold.
 FOLLOWER, CANDIDATE, LEADER = "FOLLOWER", "CANDIDATE", "LEADER"
@@ -61,6 +63,30 @@ def append_encode(term, prev_index, prev_term, commit, count=0, event=0):
     """
     return struct.pack("<BHBHBB", term & 0xFF, prev_index & 0xFFFF, prev_term & 0xFF,
                        commit & 0xFFFF, count & 0xFF, event & 0xFF)
+
+
+def ack_encode(term, match_index, result):
+    """Encode an AppendEntries acknowledgement.
+
+    A CAN frame ack only means someone heard the frame, so step 5 of the client
+    write path needs this separate frame per follower (TASKS.md D10).
+
+    :param term: The follower's term.
+    :param match_index: Highest index it now matches the leader on.
+    :param result: Outcome code, 0 accepted.
+    :return: Eight bytes.
+    """
+    return struct.pack("<BHB4x", term & 0xFF, match_index & 0xFFFF, result & 0xFF)
+
+
+def ack_decode(data):
+    """Decode an AppendEntries acknowledgement.
+
+    :param data: Eight received bytes.
+    :return: Mapping of term, match_index and result.
+    """
+    term, match_index, result = struct.unpack("<BHB4x", data)
+    return {"term": term, "match_index": match_index, "result": result}
 
 
 def append_decode(data):
@@ -145,11 +171,18 @@ class RaftAgent:
         self.refs_sent = 0
         self.appends_sent = 0
         self.commit_index = 0
-        self.last_log_index = 0
-        self.last_log_term = 0
+        self.log = RaftLog()
+        self.net = Network()
+        self.peers = [n for n in range(1, config["N"] + 1) if n != node_id]
+        # Raft's nextIndex and matchIndex, one per follower.
+        self.next_index = {peer: 1 for peer in self.peers}
+        self.match_index = {peer: 0 for peer in self.peers}
+        self.acks = 0
+        self.committed = 0
         self.heartbeat = config["heartbeat_ms"] / 1000
         self.ref_timer = Periodic(self.heartbeat)
         self.append_timer = Periodic(APPEND_PERIOD)
+        self.catchup_timer = Periodic(self.heartbeat)
 
     def is_leader(self):
         """Report whether this node currently leads.
@@ -179,22 +212,122 @@ class RaftAgent:
         self.refs_sent += 1
 
     def append_tx(self, now):
-        """Send an empty AppendEntries every 100 ms when leading.
+        """Send AppendEntries: every 100 ms when idle, faster while replicating.
+
+        One identifier is broadcast to every follower, so the header is built
+        from the **furthest behind** follower's nextIndex. A follower that
+        already holds that entry accepts it idempotently, which is why
+        raft_log_accept() had to be written that way: on this bus each append
+        arrives two to four times anyway, once per bus plus relayed copies.
 
         :param now: Monotonic time from the caller's loop.
         """
-        if not self.is_leader() or not self.append_timer.due(now):
+        if not self.is_leader():
             return
-        self.send(APPEND, append_encode(self.term, self.last_log_index,
-                                        self.last_log_term, self.commit_index))
+        behind = self.log.last_index() >= min(self.next_index.values(),
+                                              default=self.log.last_index() + 1)
+        # Idle: the 100 ms heartbeat of checkoff step 2. Replicating: catch up
+        # at the heartbeat rate instead of one entry per 100 ms.
+        due = self.append_timer.due(now)
+        if not due and not (behind and self.catchup_timer.due(now)):
+            return
+        self.send(APPEND, self.append_payload())
         self.appends_sent += 1
+
+    def append_payload(self):
+        """Build the AppendEntries header for the furthest behind follower.
+
+        :return: Eight bytes.
+        """
+        nxt = min(self.next_index.values(), default=self.log.last_index() + 1)
+        nxt = max(1, min(nxt, self.log.last_index() + 1))
+        prev_index = nxt - 1
+        prev_term = self.log.term_at(prev_index) or 0
+        entry = self.log.get(nxt)
+        count, event = (1, entry[1]) if entry else (0, 0)
+        return append_encode(self.term, prev_index, prev_term, self.commit_index,
+                             count, event)
+
+    def client_append(self, event):
+        """Steps 1 and 2 of Figure 2: the client calls the leader, which appends.
+
+        The entry is not committed here. Commit happens between steps 5 and 6,
+        once a majority has stored it, which on_ack() detects.
+
+        :param event: Encoded event to record.
+        :return: Index assigned, or None when this node is not the leader and
+            the caller must be redirected.
+        """
+        if not self.is_leader():
+            return None
+        index = self.log.append(self.term, event)
+        if self.config["Debug"]:
+            print("raft: append idx=%d term=%d %s"
+                  % (index, self.term, event_name(event)), flush=True)
+        return index
+
+    def on_ack(self, node, data):
+        """Step 5 of Figure 2: a follower reports what it has stored.
+
+        :param node: Node ID the acknowledgement came from.
+        :param data: Eight received bytes.
+        :return: True when the commit index advanced.
+        """
+        if not self.is_leader() or node not in self.next_index:
+            return False
+        ack = ack_decode(data)
+        self.acks += 1
+        if ack["result"] == 0:
+            self.match_index[node] = max(self.match_index[node], ack["match_index"])
+            self.next_index[node] = self.match_index[node] + 1
+        else:
+            # Gap or conflict: back up one and try again on the next append.
+            self.next_index[node] = max(1, self.next_index[node] - 1)
+        return self.advance_commit()
+
+    def advance_commit(self):
+        """Commit the highest index a majority has stored, in the current term.
+
+        Raft only commits an entry from the leader's own term this way, which
+        keeps a later leader from committing a predecessor's entry by counting.
+
+        :return: True when the commit index advanced.
+        """
+        majority = self.config["majority"]
+        before = self.commit_index
+        for index in range(self.log.last_index(), self.commit_index, -1):
+            if self.log.term_at(index) != self.term:
+                continue
+            stored = 1 + sum(1 for peer in self.peers
+                             if self.match_index[peer] >= index)
+            if stored >= majority:
+                self.commit_index = index
+                break
+        if self.commit_index == before:
+            return False
+        self.net.replay(self.log, self.commit_index)
+        self.committed = self.commit_index
+        if self.config["Debug"]:
+            print("raft: commit idx=%d %s" % (self.commit_index, self.net.render()),
+                  flush=True)
+        return True
+
+    def network(self):
+        """Return the committed network graph, as the Raft client reads it.
+
+        :return: The Network object the state machine has built.
+        """
+        return self.net
 
     def summary(self):
         """Describe the agent state for the console.
 
         :return: One line of role and counters.
         """
-        return ("raft: term=%d role=%s leader=%s refs=%d appends=%d skipped=%d"
+        return ("raft: term=%d role=%s leader=%s refs=%d appends=%d skipped=%d "
+                "log=%d commit=%d acks=%d | %s"
                 % (self.term, self.role,
                    self.config["nodes"][self.leader - 1] if self.leader else "none",
-                   self.refs_sent, self.appends_sent, self.ref_timer.skipped))
+                   self.refs_sent, self.appends_sent, self.ref_timer.skipped,
+                   self.log.last_index(), self.commit_index, self.acks,
+                   self.net.render()))

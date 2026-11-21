@@ -17,8 +17,11 @@ from measure_can import frame as measurement_frame
 class ProtocolTests(unittest.TestCase):
     def test_socket_filters_receive_catalog_data(self):
         filters = list(struct.iter_unpack("=II", catalog_filters()))
-        self.assertEqual([can_id for can_id, _ in filters], list(CATALOG))
-        for can_id, mask in filters:
+        # The Lab 3 catalog and REF are matched exactly; the Lab 5 consensus
+        # range is one masked filter, so the leader hears every follower's ack.
+        exact = [entry for entry in filters if entry[1] & 0x7FF == 0x7FF]
+        self.assertEqual([can_id for can_id, _ in exact], list(CATALOG) + [0x008])
+        for can_id, mask in exact:
             # Linux routes masks with CAN_ERR_FLAG to its error subscription list.
             self.assertEqual(mask & 0x20000000, 0)
             accepted = [candidate for candidate in range(0x800)
@@ -26,6 +29,13 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(accepted, [can_id])
             for flag in (0x80000000, 0x40000000):
                 self.assertNotEqual((can_id | flag) & mask, can_id & mask)
+        ranged = [entry for entry in filters if entry[1] & 0x7FF != 0x7FF]
+        self.assertEqual(ranged, [(0x040, 0xC00007E0)])
+        for node in (1, 2, 3):
+            ack = 0x044 + node
+            self.assertEqual(ack & 0x7E0, 0x040)
+        for can_id in CATALOG:
+            self.assertNotEqual(can_id & 0x7E0, 0x040)
 
     def test_measurement_stimulus(self):
         for t, brake in ((0, 0), (.99, 0), (1, 100), (2, 0)):
@@ -148,6 +158,46 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(dedup.duplicate(HB3, data, 1, 1.320))
 
 
+class ClientBootstrapTests(unittest.TestCase):
+    def cockpit(self):
+        """Build a leader with a capturing agent and no sockets.
+
+        :return: (cockpit, list of (can_id, data) the agent sent).
+        """
+        app = Cockpit.__new__(Cockpit)
+        app.pins = Mock()
+        app.heartbeat = [[float("-inf")] * 2 for _ in range(3)]
+        app.fault_at = [float("-inf")] * 3
+        app.local_fail = False
+        app.dedup = Dedup()
+        app.bad_frames = 0
+        app.remote = None
+        app.forwarded = [0, 0]
+        app.send_errors = [0, 0]
+        app.can = [Mock(), Mock()]
+        app.error = False
+        app.cluster = load_cluster_config()
+        sent = []
+        app.agent = RaftAgent(app.cluster, cluster_node_id(app.cluster, "cockpit"),
+                              lambda can_id, data: sent.append((can_id, data)))
+        app.seen_nodes = {1}
+        return app, sent
+
+    def test_first_sight_of_a_peer_appends_node_up_exactly_once(self):
+        app, _ = self.cockpit()
+        self.assertEqual(app.agent.log.last_index(), 0)
+        app.can[0].recv.return_value = CAN_FRAME.pack(
+            HB2, 8, payload(HB2, 0, bytes((0, 3))))
+        app.receive(0, 1.0)
+        self.assertEqual(app.agent.log.last_index(), 1)
+        self.assertEqual(app.seen_nodes, {1, 2})
+        # Seeing it again must not append a second NODE_steering_UP.
+        app.can[1].recv.return_value = CAN_FRAME.pack(
+            HB2, 8, payload(HB2, 1, bytes((0, 3))))
+        app.receive(1, 1.1)
+        self.assertEqual(app.agent.log.last_index(), 1)
+
+
 class IndicatorTests(unittest.TestCase):
     def test_leader_and_sync_light_on_the_pi_and_track_the_role(self):
         app = Cockpit.__new__(Cockpit)
@@ -175,6 +225,8 @@ class StateTests(unittest.TestCase):
         app.cluster = load_cluster_config()
         app.agent = RaftAgent(app.cluster, cluster_node_id(app.cluster, "cockpit"),
                               lambda can_id, data: None)
+        # receive() records first sight of a peer, so the set must exist.
+        app.seen_nodes = {1}
         app.heartbeat = [[float("-inf")] * 2 for _ in range(3)]
         app.fault_at = [float("-inf")] * 3
         app.local_fail = False
