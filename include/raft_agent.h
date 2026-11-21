@@ -42,6 +42,15 @@ bool raft_synced(void);
  * @param local_us Local clock when the frame was taken off the queue.
  */
 void raft_on_ref(const uint8_t data[8], uint64_t local_us);
+/** @brief Age out the time master when references stop arriving.
+ *
+ * Called periodically from the monitor task. SYNC must mean that this node is
+ * currently synchronized, not that it once saw a REF, because checkoff step 6
+ * watches it go out when the master dies and step 9 watches it stay on at a
+ * node reachable only by relay.
+ * @param now_ms Current uptime in milliseconds.
+ */
+void raft_agent_tick(int64_t now_ms);
 /** @brief Read the most recent reference, for the console and later phases.
  * @param ref Destination for the last decoded REF.
  * @param local_us Destination for the local clock at that receipt.

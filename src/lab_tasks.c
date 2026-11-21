@@ -564,6 +564,9 @@ static void monitor_task(void *a, void *b, void *c)
 			}
 		}
 		int64_t now = k_uptime_get();
+
+		/* SYNC tracks liveness, so it has to age out here, not only on RX. */
+		raft_agent_tick(now);
 		k_spinlock_key_t key = k_spin_lock(&state_lock);
 		bool error = state.local_fail || !state.have_ctrl || now - state.ctrl_at >= 60;
 		state.degraded[0] = false;

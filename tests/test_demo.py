@@ -8,7 +8,9 @@ from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pi" / "demo"))
 from protocol import CTRL, FAULT, HB1, HB2, HB3, BLINK, FORCE, crc8, payload, valid, decode_wheel, Dedup, CAN_FRAME, CATALOG, origin
-from cockpit import Cockpit, catalog_filters
+from cluster_config import load as load_cluster_config, node_id as cluster_node_id
+from raft_agent import RaftAgent
+from cockpit import Cockpit, Pins, catalog_filters
 from measure_can import frame as measurement_frame
 
 
@@ -146,10 +148,33 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(dedup.duplicate(HB3, data, 1, 1.320))
 
 
+class IndicatorTests(unittest.TestCase):
+    def test_leader_and_sync_light_on_the_pi_and_track_the_role(self):
+        app = Cockpit.__new__(Cockpit)
+        app.pins = Pins(disabled=True)
+        app.cluster = load_cluster_config()
+        app.agent = RaftAgent(app.cluster, cluster_node_id(app.cluster, "cockpit"),
+                              lambda can_id, data: None)
+        app.show_raft_state()
+        # Checkoff step 1: LEADER on the Pi only, SYNC on all three.
+        self.assertTrue(app.pins.level[Pins.LEADER])
+        self.assertTrue(app.pins.level[Pins.SYNC])
+        # A follower drives neither; the Nucleos keep LEADER dark.
+        app.agent = RaftAgent(app.cluster, cluster_node_id(app.cluster, "steering"),
+                              lambda can_id, data: None)
+        app.show_raft_state()
+        self.assertFalse(app.pins.level[Pins.LEADER])
+        self.assertFalse(app.pins.level[Pins.SYNC])
+
+
 class StateTests(unittest.TestCase):
     def cockpit(self):
         app = Cockpit.__new__(Cockpit)
         app.pins = Mock()
+        # monitor() drives the Lab 5 LEADER and SYNC indicators from the agent.
+        app.cluster = load_cluster_config()
+        app.agent = RaftAgent(app.cluster, cluster_node_id(app.cluster, "cockpit"),
+                              lambda can_id, data: None)
         app.heartbeat = [[float("-inf")] * 2 for _ in range(3)]
         app.fault_at = [float("-inf")] * 3
         app.local_fail = False

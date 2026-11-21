@@ -27,11 +27,13 @@ def catalog_filters():
 
 class Pins:
     """GPIO ownership via libgpiod v2, with explicit non-measuring opt-out."""
-    OFFSETS = (23, 22, 17, 27, 5, 6)  # UDP, CMD, TX_A, TX_B, DEG_A, DEG_B
+    # Lab 3 markers, then the Lab 5 outputs. See docs/DEMO_WIRING.md.
+    OFFSETS = (23, 22, 17, 27, 5, 6, 13, 19, 26)
+    UDP, CMD, TX_A, TX_B, DEG_A, DEG_B, PPS, LEADER, SYNC = range(9)
 
     def __init__(self, disabled):
         self.request = None
-        self.level = [False] * 6
+        self.level = [False] * len(self.OFFSETS)
         if not disabled:
             import gpiod
             from gpiod.line import Direction, Value
@@ -80,6 +82,7 @@ class Cockpit:
               % (self.cluster["hash"], self.cluster["N"], self.cluster["majority"],
                  self.cluster["default_leader"]), flush=True)
         print(self.agent.summary(), flush=True)
+        self.show_raft_state()
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp.setblocking(False)
         self.udp.bind((args.bind, args.port))
@@ -133,6 +136,16 @@ class Cockpit:
         frame = CAN_FRAME.pack(can_id, 8, data)
         return sum(self.write_bus(bus, frame) for bus in (0, 1))
 
+    def show_raft_state(self):
+        """Drive the LEADER and SYNC indicators from the agent's role.
+
+        Checkoff step 1 reads these directly: LEADER on the Pi only, SYNC on all
+        three. While this node leads it is its own time master, so it is
+        trivially synchronized; P9 extends SYNC to track a remote master.
+        """
+        self.pins.set(Pins.LEADER, self.agent.is_leader())
+        self.pins.set(Pins.SYNC, self.agent.is_leader())
+
     def send_lab5(self, can_id, data):
         """Send a Lab 5 frame on both buses with the payload untouched.
 
@@ -184,7 +197,7 @@ class Cockpit:
         """Validate one wheel update and retain the latest command."""
         raw, remote = self.udp.recvfrom(2048)
         received_ns = time.monotonic_ns()
-        self.pins.toggle(0)
+        self.pins.toggle(Pins.UDP)
         try:
             sequence, steer, throttle, brake, buttons = decode_wheel(raw)
         except ValueError:
@@ -224,7 +237,7 @@ class Cockpit:
         self.sequence[CTRL] = (self.sequence[CTRL] + 1) & 15
         frame = CAN_FRAME.pack(CTRL, 8, data)
         first_ok = self.write_bus(0, frame)
-        self.pins.toggle(1)
+        self.pins.toggle(Pins.CMD)
         elapsed = (time.monotonic_ns() - received_ns) / 1000
         self.write_bus(1, frame)
         sent = int(first_ok)
@@ -271,7 +284,8 @@ class Cockpit:
                           max(self.heartbeat[p]) <= self.fault_at[p] for p in (1, 2))
         self.error = self.local_fail or now - self.last_udp >= .060 or peer_failed
         for bus in (0, 1):
-            self.pins.set(4 + bus, self.degraded[bus])
+            self.pins.set(Pins.DEG_A + bus, self.degraded[bus])
+        self.show_raft_state()
 
     def blink_tx(self, now):
         """Master normal edges at 500 ms, fault hazard edges at 250 ms."""

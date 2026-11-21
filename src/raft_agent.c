@@ -30,6 +30,12 @@
  * this is a normal event, not an error.
  */
 #define CYCLE_RESTART_STEP 32768U
+/** @brief Milliseconds without a REF after which this node is no longer synced.
+ *
+ * The same bound Part 2 gives the follower for declaring the leader dead, so
+ * SYNC goes out at the moment an election would start rather than lingering.
+ */
+#define SYNC_TIMEOUT_MS (LAB5_CFG_MISSED_HEARTBEATS * LAB5_CFG_HEARTBEAT_MS)
 
 static struct {
 	enum raft_role role;
@@ -39,6 +45,7 @@ static struct {
 	bool have_cycle;
 	uint16_t cycle;
 	uint32_t missed;
+	int64_t last_ref_ms;
 	int64_t last_gap_report_ms;
 	struct lab5_ref last;
 	uint64_t last_local_us;
@@ -147,6 +154,7 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us)
 	}
 	first = !state.synced;
 	missed = state.missed;
+	state.last_ref_ms = now;
 	state.cycle = ref.cycle;
 	state.have_cycle = true;
 	state.synced = true;
@@ -171,6 +179,32 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us)
 		       ref.cycle, (unsigned long long)ref.master_us);
 	} else if (report_gap) {
 		printk("raft: missed %u REF at cycle=%u, %u total\n", gap, ref.cycle, missed);
+	}
+}
+
+/** @brief Age out the time master when references stop arriving.
+ * @param now_ms Current uptime in milliseconds.
+ */
+void raft_agent_tick(int64_t now_ms)
+{
+	bool lost = false;
+
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+
+	if (state.synced && now_ms - state.last_ref_ms >= SYNC_TIMEOUT_MS) {
+		state.synced = false;
+		/* Keep the counter: the next REF is a new master, not a gap. */
+		state.have_cycle = false;
+		lost = true;
+	}
+	k_spin_unlock(&state_lock, key);
+
+	if (!lost) {
+		return;
+	}
+	lab_io_set(LAB_SYNC, false);
+	if (LAB5_CFG_DEBUG) {
+		printk("raft: lost SYNC, no REF for %d ms\n", SYNC_TIMEOUT_MS);
 	}
 }
 

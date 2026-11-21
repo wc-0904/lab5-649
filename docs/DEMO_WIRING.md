@@ -42,8 +42,27 @@ disables SPI2 (the silkscreen labels them SPI2 NSS/SCK/MISO/MOSI).
 | 17 | HZ | PB15 | CN10 | Hazard phase marker, scope against FL and RL |
 | 18 | PPS | PA0 | CN7, Arduino A0 | One rising edge per whole global second |
 
-Confirm each printed connector pin number against `nucleo_f401re_morpho.png` and
-the board silkscreen before wiring; the numbers are not inferable by counting.
+Connector numbers verified against `nucleo_f401re_morpho.png`: CN10's even column
+runs 2 PC8, 4 PC6, 6 PC5, 8 U5V, 10 NC, 12 PA12, 14 PA11, 16 PB12, 20 GND,
+22 PB2, 24 PB1, 26 PB15, 28 PB14, 30 PB13, 32 AGND, 34 PC4, which puts PC4 on 34
+as the existing Lab 3 wiring already had it. CN7's even column reaches 28 PA0,
+30 PA1.
+
+On the Pi the three Lab 5 outputs are physical 33, 35 and 37:
+
+| Signal | Physical | BCM | Type |
+|---|---|---|---|
+| PPS | 33 | 13 | scope. GPIO13 is PWM1, so a hardware-timed pulse stays possible without rewiring. See TASKS.md D22 |
+| LEADER | 35 | 19 | LED |
+| SYNC | 37 | 26 | LED |
+
+They are clear of SPI0 (19, 21, 23, 24, 26), the MCP2515 interrupts (18, 22) and
+the six Lab 3 markers, and ground is on 39 beside them.
+
+LEDs take a series resistor to GND and are driven active high: pin, resistor,
+anode, cathode, ground. 1 kohm gives about 1.3 mA on 3.3 V and 330 ohm about
+4 mA, both inside the STM32's comfortable 8 mA per pin and the Pi's 16 mA. Scope
+points need no components, just a wire to a breadboard row.
 
 PA0 is TIM5 channel 1. TIM5 is the second 32-bit timer on the F401 and TIM2 is
 already taken by the PWM output on PA1, so the P7 hardware-timer compare that
