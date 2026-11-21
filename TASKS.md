@@ -303,8 +303,21 @@ index on all three consoles, with `term=1` throughout and only N2 ever sending a
 client request. That is checkoff step 4's wording satisfied: one entry per
 change at the same index everywhere, DEG LEDs as in Lab 3, term unchanged.
 
-The 60 ms debounce proved right on real jumper bounce; it was a guess before the
-bench and needed no adjustment.
+The 60 ms down debounce proved right on real jumper bounce.
+
+A second bench run then exposed something a symmetric debounce cannot fix. With
+the stub left out the log kept growing, reaching index 77 still alternating
+DOWN and UP at about 1.7 entries a second with nobody touching the jumper. A
+disconnected branch does not sit quietly in bus off: the controller recovers
+automatically after 128 by 11 recessive bits, returns to error active with a
+cleared transmit counter, and fails again on its next transmission. Each half of
+that cycle outlasts any debounce short enough to be useful.
+
+Two changes fix it. Healthy now means error active **with a zero transmit error
+count**, not merely "not bus off", so the recovery window does not read as
+healthy. And the debounce is asymmetric: 60 ms to report a link down, 750 ms of
+continuously clean transmission to report it up. Coming up late costs nothing,
+since the checkoff times no entry and only requires one per change.
 
 The run also exposed a gap since fixed: a node reported only link *changes*, so
 links that were already up at boot never entered the graph, leaving the rendered

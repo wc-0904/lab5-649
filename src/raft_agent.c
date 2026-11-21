@@ -37,16 +37,27 @@
  * SYNC goes out at the moment an election would start rather than lingering.
  */
 #define SYNC_TIMEOUT_MS (LAB5_CFG_MISSED_HEARTBEATS * LAB5_CFG_HEARTBEAT_MS)
-/** @brief How long a link state must hold before it is reported, milliseconds.
+/** @brief How long a link must look bad before it is reported down, milliseconds.
  *
  * A jumper pull is mechanically noisy and the controller crosses error passive
  * on its way to bus off, so an undebounced report puts several entries in the
- * log for one physical change. Checkoff step 4 wants exactly one entry per
- * change at the same index on every node, so the state has to settle first
- * (TASKS.md D16). Three monitor periods, well inside the 100 ms the Lab 3
- * recovery requirement allows.
+ * log for one physical change. Three monitor periods, well inside the 100 ms
+ * the Lab 3 recovery requirement allows (TASKS.md D16).
  */
-#define LINK_DEBOUNCE_MS 60
+#define LINK_DOWN_DEBOUNCE_MS 60
+/** @brief How long a link must look healthy before it is reported up, milliseconds.
+ *
+ * Deliberately much longer than the down bound. A disconnected branch does not
+ * sit quietly in bus off: the controller recovers automatically after 128 by 11
+ * recessive bits, returns to error active with a cleared transmit counter, then
+ * fails again as soon as it transmits. On the bench that produced an endless
+ * DOWN, UP, DOWN, UP sequence at roughly 1.7 entries a second, which a
+ * symmetric debounce cannot suppress because each half of the cycle outlasts
+ * it. Requiring the link to look clean for most of a second outlasts the
+ * recovery window instead. Coming up late costs nothing; the checkoff does not
+ * time the entry, only requires one per change.
+ */
+#define LINK_UP_DEBOUNCE_MS 750
 /** @brief Resend period for a client request the leader has not acted on. */
 #define CLIENT_RETRY_MS 200
 
@@ -351,7 +362,8 @@ void raft_client_poll(int64_t now_ms)
 	k_spinlock_key_t key = k_spin_lock(&state_lock);
 
 	for (int bus = 0; bus < 2; bus++) {
-		bool down = lab_can_link_down(bus);
+		bool down = !lab_can_link_healthy(bus);
+		int64_t needed = down ? LINK_DOWN_DEBOUNCE_MS : LINK_UP_DEBOUNCE_MS;
 
 		if (down != state.link_candidate[bus]) {
 			state.link_candidate[bus] = down;
@@ -359,7 +371,7 @@ void raft_client_poll(int64_t now_ms)
 			continue;
 		}
 		if (down == state.link_down[bus] ||
-		    now_ms - state.link_changed_ms[bus] < LINK_DEBOUNCE_MS) {
+		    now_ms - state.link_changed_ms[bus] < needed) {
 			continue;
 		}
 		/* Settled and different: this is one real change to report. */

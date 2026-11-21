@@ -300,22 +300,22 @@ void lab_can_send(uint16_t id, uint8_t data[8])
 	(void)enqueue(&frame, 1, origin, false);
 }
 
-/** @brief Report whether this node's own link to one bus looks down.
+/** @brief Report whether this node's own link to one bus is transmitting cleanly.
  * @param bus Physical index 0 for A, 1 for B.
- * @return True when the controller is error passive, bus off or stopped.
+ * @return True when the controller is error active and has no transmit errors.
  */
-bool lab_can_link_down(int bus)
+bool lab_can_link_healthy(int bus)
 {
 	enum can_state state;
+	struct can_bus_err_cnt errors;
 
 	if (bus < 0 || bus > 1 || !buses[bus].started) {
-		return true;
+		return false;
 	}
-	if (can_get_state(buses[bus].dev, &state, NULL) != 0) {
-		return true;
+	if (can_get_state(buses[bus].dev, &state, &errors) != 0) {
+		return false;
 	}
-	return state == CAN_STATE_ERROR_PASSIVE || state == CAN_STATE_BUS_OFF ||
-		state == CAN_STATE_STOPPED;
+	return state == CAN_STATE_ERROR_ACTIVE && errors.tx_err_cnt == 0;
 }
 
 /** @brief Send a Lab 5 frame onto both buses with the payload untouched.
