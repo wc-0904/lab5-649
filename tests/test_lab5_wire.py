@@ -296,6 +296,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(decoded["result"], REPLY_REDIRECT)
         self.assertEqual(decoded["leader"], 1)
         self.assertEqual(decoded["request"], 7)
+        self.assertEqual(decoded["node"], 3)
         # A follower must not append on a client's behalf.
         self.assertEqual(agent.log.last_index(), 0)
 
@@ -322,6 +323,18 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(first["index"], second["index"])
         self.assertEqual(agent.log.last_index(), 1)
 
+    def test_replies_name_the_node_so_colliding_request_ids_do_not_cross(self):
+        # Clients number requests independently, so two followers routinely have
+        # request id 1 outstanding. Without the node, one ack clears the other.
+        from network_state import event_link
+        from raft_agent import client_encode, reply_decode
+        agent, _ = self.agent("cockpit")
+        a = reply_decode(agent.on_client_request(2, client_encode(event_link(2, 1, True), 1))[1])
+        b = reply_decode(agent.on_client_request(3, client_encode(event_link(3, 1, True), 1))[1])
+        self.assertEqual((a["node"], a["request"]), (2, 1))
+        self.assertEqual((b["node"], b["request"]), (3, 1))
+        self.assertNotEqual(a["index"], b["index"])
+
     def test_two_nodes_reporting_different_links_both_get_entries(self):
         from network_state import event_link
         from raft_agent import client_encode
@@ -335,8 +348,9 @@ class AgentTests(unittest.TestCase):
         from raft_agent import client_decode, client_encode, reply_decode, reply_encode
         self.assertEqual(client_decode(client_encode(0x2A, 1234)),
                          {"event": 0x2A, "request": 1234})
-        self.assertEqual(reply_decode(reply_encode(1, 3, 1234, 30000)),
-                         {"result": 1, "leader": 3, "request": 1234, "index": 30000})
+        self.assertEqual(reply_decode(reply_encode(1, 3, 1234, 30000, 2)),
+                         {"result": 1, "leader": 3, "request": 1234,
+                          "index": 30000, "node": 2})
 
     def test_empty_append_carries_no_entries(self):
         agent, sent = self.agent("cockpit")

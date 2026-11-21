@@ -238,7 +238,7 @@ void lab5_reply_encode(uint8_t data[8], const struct lab5_reply *reply)
 	data[3] = (uint8_t)(reply->request >> 8);
 	data[4] = (uint8_t)reply->index;
 	data[5] = (uint8_t)(reply->index >> 8);
-	data[6] = 0;
+	data[6] = reply->node;
 	data[7] = 0;
 }
 
@@ -253,6 +253,7 @@ struct lab5_reply lab5_reply_decode(const uint8_t data[8])
 		.leader = data[1],
 		.request = (uint16_t)((uint16_t)data[2] | ((uint16_t)data[3] << 8)),
 		.index = (uint16_t)((uint16_t)data[4] | ((uint16_t)data[5] << 8)),
+		.node = data[6],
 	};
 
 	return reply;

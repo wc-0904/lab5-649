@@ -81,11 +81,19 @@ struct lab5_client { uint8_t event; uint16_t request; };
 /** @brief The leader's reply to a client, carrying either a commit or a redirect.
  *
  * Wire layout: byte 0 the result, byte 1 the node believed to be leader,
- * bytes 2..3 the request id, bytes 4..5 the index the entry was given. A client
- * that reached a follower gets LAB5_REPLY_REDIRECT naming the leader, which is
- * step 6 of the write path failing closed rather than silently.
+ * bytes 2..3 the request id, bytes 4..5 the index the entry was given, byte 6
+ * the node being answered. A client that reached a follower gets
+ * LAB5_REPLY_REDIRECT naming the leader, which is step 6 of the write path
+ * failing closed rather than silently.
+ *
+ * The target node is not redundant. One identifier carries every reply, and
+ * clients number their own requests independently, so two followers routinely
+ * have a request id 1 outstanding at once. Without the target, one client's
+ * acknowledgement clears the other's pending write and that entry is lost.
  */
-struct lab5_reply { uint8_t result; uint8_t leader; uint16_t request; uint16_t index; };
+struct lab5_reply {
+	uint8_t result; uint8_t leader; uint16_t request; uint16_t index; uint8_t node;
+};
 /** @brief Reply results. */
 enum lab5_reply_result { LAB5_REPLY_COMMITTED = 0, LAB5_REPLY_REDIRECT = 1 };
 /** @brief Largest offset from LAB5_EPOCH_US the 48 bit REF field can carry. */

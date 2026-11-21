@@ -337,15 +337,20 @@ void raft_on_append(const uint8_t data[8])
  * learns the outcome either from the reply or from seeing its own entry commit.
  * @param event Event to record.
  * @param request Request id to match the reply.
+ * @param retry True when this repeats an unanswered request.
  */
-static void send_client_request(uint8_t event, uint16_t request)
+static void send_client_request(uint8_t event, uint16_t request, bool retry)
 {
 	struct lab5_client payload = {.event = event, .request = request};
 	uint8_t data[8];
 
 	lab5_client_encode(data, &payload);
 	lab_can_send_lab5(lab5_id_for(LAB5_CLIENT_REQ_BASE, LAB_NODE_ID), data);
-	if (LAB5_CFG_DEBUG) {
+	/* Retries repeat every CLIENT_RETRY_MS until a leader answers, so only
+	 * the first attempt prints; otherwise a cluster with no leader fills the
+	 * console.
+	 */
+	if (LAB5_CFG_DEBUG && !retry) {
 		printk("raft: client req=%u %s\n", request, raft_event_name(event));
 	}
 }
@@ -395,8 +400,7 @@ void raft_client_poll(int64_t now_ms)
 	k_spin_unlock(&state_lock, key);
 
 	if (event != RAFT_EVENT_NONE) {
-		ARG_UNUSED(retry);
-		send_client_request(event, request);
+		send_client_request(event, request, retry);
 	}
 }
 
@@ -411,7 +415,10 @@ void raft_on_reply(const uint8_t data[8])
 
 	k_spinlock_key_t key = k_spin_lock(&state_lock);
 
-	if (state.pending_event != RAFT_EVENT_NONE &&
+	/* The target node matters: every reply shares one identifier and clients
+	 * number requests independently, so ids collide across nodes routinely.
+	 */
+	if (reply.node == LAB_NODE_ID && state.pending_event != RAFT_EVENT_NONE &&
 	    reply.request == state.pending_request) {
 		matched = true;
 		if (!redirect) {
@@ -419,7 +426,7 @@ void raft_on_reply(const uint8_t data[8])
 			state.pending_event = RAFT_EVENT_NONE;
 		}
 	}
-	if (redirect && reply.leader != 0) {
+	if (reply.node == LAB_NODE_ID && redirect && reply.leader != 0) {
 		state.leader = reply.leader;
 	}
 	k_spin_unlock(&state_lock, key);

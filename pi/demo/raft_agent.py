@@ -92,17 +92,23 @@ def client_decode(data):
     return {"event": event, "request": request}
 
 
-def reply_encode(result, leader, request, index):
+def reply_encode(result, leader, request, index, node=0):
     """Encode the leader's reply, carrying either a commit or a redirect.
+
+    The target node is not redundant: one identifier carries every reply and
+    clients number their own requests independently, so two followers routinely
+    have a request id 1 outstanding at once. Without it, one client's
+    acknowledgement clears the other's pending write and that entry is lost.
 
     :param result: REPLY_COMMITTED or REPLY_REDIRECT.
     :param leader: Node believed to be leader.
     :param request: Request id being answered.
     :param index: Index the entry was given, 0 for a redirect.
+    :param node: Node being answered.
     :return: Eight bytes.
     """
-    return struct.pack("<BBHH2x", result & 0xFF, leader & 0xFF,
-                       request & 0xFFFF, index & 0xFFFF)
+    return struct.pack("<BBHHBx", result & 0xFF, leader & 0xFF,
+                       request & 0xFFFF, index & 0xFFFF, node & 0xFF)
 
 
 def reply_decode(data):
@@ -111,8 +117,9 @@ def reply_decode(data):
     :param data: Eight received bytes.
     :return: Mapping of result, leader, request and index.
     """
-    result, leader, request, index = struct.unpack("<BBHH2x", data)
-    return {"result": result, "leader": leader, "request": request, "index": index}
+    result, leader, request, index, node = struct.unpack("<BBHHBx", data)
+    return {"result": result, "leader": leader, "request": request,
+            "index": index, "node": node}
 
 
 def ack_encode(term, match_index, result):
@@ -337,7 +344,7 @@ class RaftAgent:
             if not self.leader:
                 return None
             return (LAB5_CLIENT_REDIRECT,
-                    reply_encode(REPLY_REDIRECT, self.leader, request["request"], 0))
+                    reply_encode(REPLY_REDIRECT, self.leader, request["request"], 0, node))
         if key in self.client_seen:
             index = self.client_seen[key]
         else:
@@ -346,7 +353,8 @@ class RaftAgent:
                 return None
             self.client_seen[key] = index
         return (LAB5_CLIENT_REDIRECT,
-                reply_encode(REPLY_COMMITTED, self.node_id, request["request"], index))
+                reply_encode(REPLY_COMMITTED, self.node_id, request["request"], index,
+                             node))
 
     def routing_table(self):
         """Distil the committed graph into the routes this node needs.

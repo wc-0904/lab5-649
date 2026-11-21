@@ -313,8 +313,15 @@ automatically after 128 by 11 recessive bits, returns to error active with a
 cleared transmit counter, and fails again on its next transmission. Each half of
 that cycle outlasts any debounce short enough to be useful.
 
-Two changes fix it. Healthy now means error active **with a zero transmit error
-count**, not merely "not bus off", so the recovery window does not read as
+A third bench run then found a cross-node bug. Every reply shares one
+identifier and clients number their own requests independently, so both
+followers had request id 1 outstanding at once; the leader's acknowledgement to
+N2 cleared N3's pending write and drivetrain's links never reached the log, which
+showed as `links=121...` with everything connected. The reply now names the node
+it answers, and a client ignores replies addressed to anyone else.
+
+Two changes fix the oscillation. Healthy now means error active **with a zero
+transmit error count**, not merely "not bus off", so the recovery window does not read as
 healthy. And the debounce is asymmetric: 60 ms to report a link down, 750 ms of
 continuously clean transmission to report it up. Coming up late costs nothing,
 since the checkoff times no entry and only requires one per change.
