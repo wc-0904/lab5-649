@@ -379,15 +379,22 @@ void raft_client_poll(int64_t now_ms)
 		    now_ms - state.link_changed_ms[bus] < needed) {
 			continue;
 		}
-		/* Settled and different: this is one real change to report. */
-		state.link_down[bus] = down;
-		if (state.pending_event == RAFT_EVENT_NONE) {
-			state.pending_event = raft_event_link(LAB_NODE_ID, bus + 1, !down);
-			state.pending_request = ++state.next_request;
-			state.pending_sent_ms = now_ms;
-			event = state.pending_event;
-			request = state.pending_request;
+		/*
+		 * Settled and different: one real change to report. Only record it
+		 * as reported once it has actually been queued. A node carries one
+		 * pending request at a time, and both links settle together at
+		 * boot, so marking the change handled regardless would drop the
+		 * second link's report and never retry it.
+		 */
+		if (state.pending_event != RAFT_EVENT_NONE) {
+			continue;
 		}
+		state.link_down[bus] = down;
+		state.pending_event = raft_event_link(LAB_NODE_ID, bus + 1, !down);
+		state.pending_request = ++state.next_request;
+		state.pending_sent_ms = now_ms;
+		event = state.pending_event;
+		request = state.pending_request;
 	}
 	if (event == RAFT_EVENT_NONE && state.pending_event != RAFT_EVENT_NONE &&
 	    now_ms - state.pending_sent_ms >= CLIENT_RETRY_MS) {

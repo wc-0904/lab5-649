@@ -313,7 +313,14 @@ automatically after 128 by 11 recessive bits, returns to error active with a
 cleared transmit counter, and fails again on its next transmission. Each half of
 that cycle outlasts any debounce short enough to be useful.
 
-A third bench run then found a cross-node bug. Every reply shares one
+A fourth bench run found a lost update. A node carries one pending client
+request at a time, and both of its links settle together at boot, so the second
+link marked itself reported, found the pending slot occupied, and was dropped
+with no later retry. Both Nucleos reported bus 1 and never bus 2, showing as
+`links=121.1.`. A change is now recorded as reported only once it has actually
+been queued.
+
+A third bench run found a cross-node bug. Every reply shares one
 identifier and clients number their own requests independently, so both
 followers had request id 1 outstanding at once; the leader's acknowledgement to
 N2 cleared N3's pending write and drivetrain's links never reached the log, which
