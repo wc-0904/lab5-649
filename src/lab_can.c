@@ -51,9 +51,12 @@ K_THREAD_STACK_ARRAY_DEFINE(tx_stacks, 2, TX_STACK);
  */
 static void receive_cb(const struct device *dev, struct can_frame *frame, void *user)
 {
+	/* First statement: this is the sync timestamp, so nothing precedes it. */
+	uint32_t cycles = k_cycle_get_32();
+
 	ARG_UNUSED(dev);
 	struct lab_rx rx = {.frame = *frame, .time_ms = k_uptime_get(),
-		.bus = (uint8_t)(uintptr_t)user};
+		.cycles = cycles, .bus = (uint8_t)(uintptr_t)user};
 
 	if (k_msgq_put(&rx_queue, &rx, K_NO_WAIT) != 0) {
 		atomic_inc(&drops);

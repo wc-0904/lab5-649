@@ -14,6 +14,7 @@ from protocol import (APPEND, APPEND_ACK_BASE, LAB5_FILTER_ID, LAB5_FILTER_MASK,
                       REF, is_consensus,
                       CTRL, FAULT, HB1, HB2, HB3, BLINK, FORCE, CATALOG, FAULT_IDS,
                       CAN_FRAME, Dedup, payload, valid, decode_wheel, origin)
+from time_sync import local_cycles as local_cycles_now
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "part0"))
 from can_check import discover
 from cluster_config import load as load_cluster_config, node_id as cluster_node_id
@@ -157,7 +158,7 @@ class Cockpit:
         frame = CAN_FRAME.pack(can_id, 8, data)
         return sum(self.write_bus(bus, frame) for bus in (0, 1))
 
-    def receive_lab5(self, can_id, data, now):
+    def receive_lab5(self, can_id, data, now, now_cycles=None):
         """Hand a Lab 5 frame to the agent.
 
         Runs in the event loop beside the Lab 3 receive path, so nothing here
@@ -165,7 +166,15 @@ class Cockpit:
         :param can_id: Lab 5 identifier.
         :param data: Eight received bytes.
         :param now: Monotonic time from the caller's loop.
+        :param now_cycles: Local microsecond counter captured at the socket read.
         """
+        if can_id == REF:
+            # A leader hears its own REF back on the other bus; on_ref ignores
+            # that. While following, this is what puts the Pi on the shared
+            # timeline, and SYNC then means a live master rather than self.
+            if self.agent.on_ref(data, now_cycles):
+                self.pins.set(Pins.SYNC, True)
+            return
         for node in range(1, self.cluster["N"] + 1):
             if can_id == lab5_id_for(APPEND_ACK_BASE, node):
                 if self.agent.on_ack(node, data):
@@ -301,8 +310,10 @@ class Cockpit:
             return
         if can_id == REF or is_consensus(can_id):
             # Lab 5 traffic: valid() covers the Lab 3 catalog only, so these
-            # would otherwise be counted as malformed.
-            self.receive_lab5(can_id, data, now)
+            # would otherwise be counted as malformed. The counter is read here
+            # rather than inside receive_lab5 so the sync instant is as close to
+            # the socket read as Python allows (TASKS.md D17).
+            self.receive_lab5(can_id, data, now, local_cycles_now())
             return
         if not valid(can_id, data):
             self.bad_frames += 1
@@ -356,10 +367,27 @@ class Cockpit:
         self.last_blink = now
         self.next_edge = now + (.250 if self.error else .500)
 
+    def drift_report(self):
+        """Print the global time and the drift the timeline is correcting for.
+
+        Part 6 requires a periodic report of the drift error. On the leader
+        there is nothing to correct, so the line states that outright rather
+        than printing a ratio of one and inviting the question.
+        """
+        if not self.cluster["Debug"]:
+            return
+        global_us = self.agent.global_us()
+        line = f"sync: global={global_us // 1000000}.{global_us % 1000000:06d}"
+        if self.agent.is_leader():
+            print(f"{line} master=self")
+        else:
+            print(f"{line} ratio={self.agent.sync.ppm()} ppm "
+                  f"correction={self.agent.sync.correction_us} us")
+
     def run(self):
         """Service critical CTRL first, then bounded socket batches and timers."""
         started = time.monotonic()
-        next_hb = next_monitor = started
+        next_hb = next_monitor = next_drift = started
         try:
             while not self.args.duration or time.monotonic() - started < self.args.duration:
                 for key, _ in self.selector.select(.001):
@@ -382,6 +410,9 @@ class Cockpit:
                 self.blink_tx(now)
                 self.agent.ref_tx(now)
                 self.agent.append_tx(now)
+                if now >= next_drift:
+                    self.drift_report()
+                    next_drift = now + 1.0
         except KeyboardInterrupt:
             pass
         finally:

@@ -54,5 +54,6 @@ target_sources(app PRIVATE
   src/raft_agent.c
   src/raft_log.c
   src/network_state.c
+  src/time_sync.c
 )
 target_include_directories(app PRIVATE include "${CMAKE_CURRENT_BINARY_DIR}/lab5_generated")

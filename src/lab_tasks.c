@@ -9,6 +9,8 @@
 #include "lab_io.h"
 #include "lab_protocol.h"
 #include "raft_agent.h"
+#include "time_sync.h"
+#include "cluster_config.h"
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/printk.h>
@@ -17,14 +19,25 @@
 /** @brief Per-thread stack budget; must be checked on the target. */
 #define LAB_STACK_SIZE 1536
 /** @brief Number of independent task entries, including maintenance/diagnostics. */
-#define LAB_TASK_COUNT 10
+#define LAB_TASK_COUNT 11
 /** @brief Error state assumes full braking, represented by zero PWM and DIR high. */
 #define MOTOR_PERIOD_NS 50000U
+/** @brief Interval between drift reports, milliseconds.
+ *
+ * One second, which lines up with the PPS edge P7 adds, so the two console
+ * lines describe the same instant and can be read against each other.
+ */
+#define DRIFT_REPORT_MS 1000
 /** @brief Standard 20 ms servo period; no servo is attached. */
 #define SERVO_PERIOD_NS 20000000U
 
+/** @brief Task slots. Anything the watchdog must see progress on comes before
+ * DIAGNOSTICS, because that is the bound the health loop uses. DRIFT sits after
+ * it deliberately: it runs once a second while the health loop runs ten times a
+ * second, so including it would trip the watchdog on every pass.
+ */
 enum task_id { DISPATCH, OUTPUT, BLINK, TEST, PID, HEARTBEAT, MONITOR, FORCE,
-	RELAY, DIAGNOSTICS };
+	RELAY, DIAGNOSTICS, DRIFT };
 struct shared_state {
 	struct lab_control command;
 	int64_t ctrl_at;
@@ -196,11 +209,13 @@ static void dispatch_task(void *a, void *b, void *c)
 		 * reject it and inflate the malformed counter. REF goes to the
 		 * agent, which owns the REF_RX marker and SYNC. The rest of the
 		 * consensus range is accepted by the filter and dropped until the
-		 * phase that owns it. The millisecond uptime is a placeholder
-		 * timestamp: P6 replaces it with a capture at the chosen point.
+		 * phase that owns it. rx.cycles, not the uptime, is the sync
+		 * instant: it was captured in the receive callback, before the
+		 * queue wait this thread has just finished (TASKS.md D17).
 		 */
 		if (id == LAB5_REF) {
-			raft_on_ref(rx.frame.data, (uint64_t)k_uptime_get() * 1000U);
+			raft_on_ref(rx.frame.data, (uint64_t)k_uptime_get() * 1000U,
+				    rx.cycles);
 			finish(DISPATCH, start);
 			continue;
 		}
@@ -685,6 +700,48 @@ static void diagnostics_task(void *a, void *b, void *c)
 	}
 }
 
+/** @brief Print the drift the global timeline is currently correcting for.
+ *
+ * Part 6 requires a periodic task that reads global_gettime() and reports the
+ * drift error. One line a second, which is slow enough not to distort the
+ * timing the rest of the system is measured on. The ratio is printed in parts
+ * per million rather than as a Q16.16 integer, because that is the unit a
+ * crystal's specification uses and so the unit the report compares against.
+ * @param a Unused.
+ * @param b Unused.
+ * @param c Unused.
+ */
+static void drift_task(void *a, void *b, void *c)
+{
+	ARG_UNUSED(a);
+	ARG_UNUSED(b);
+	ARG_UNUSED(c);
+	int64_t next = k_uptime_get();
+
+	while (true) {
+		next += DRIFT_REPORT_MS;
+		uint32_t start = begin(DRIFT);
+
+		if (LAB5_CFG_DEBUG && time_sync_locked()) {
+			uint64_t global = time_sync_global_us(k_cycle_get_32());
+			int32_t ratio = time_sync_ratio();
+			/* Signed, so a slow local clock reads as a negative ppm. */
+			int32_t ppm = (int32_t)(((int64_t)(ratio - TIME_SYNC_RATIO_ONE) *
+						 1000000) >> TIME_SYNC_RATIO_SHIFT);
+
+			printk("sync: global=%llu.%06llu ratio=%d ppm correction=%d us\n",
+			       (unsigned long long)(global / 1000000U),
+			       (unsigned long long)(global % 1000000U),
+			       ppm, time_sync_correction_us());
+		}
+		finish(DRIFT, start);
+		k_sleep(K_TIMEOUT_ABS_MS(next));
+		if (k_uptime_get() > next + DRIFT_REPORT_MS) {
+			next = k_uptime_get();
+		}
+	}
+}
+
 /** @brief Create a named preemptive task.
  * @param id Index.
  * @param entry Thread body.
@@ -762,6 +819,7 @@ int lab_tasks_start(void)
 	if (LAB_NODE_ID == 2) {
 		spawn(FORCE, tx_task, 8, (void *)(uintptr_t)FORCE, (void *)(uintptr_t)50, "FORCE_TX");
 	}
+	spawn(DRIFT, drift_task, 9, NULL, NULL, "DRIFT");
 	spawn(DIAGNOSTICS, diagnostics_task, 10, NULL, NULL, "DIAGNOSTICS");
 	k_sem_give(&output_event);
 	k_sem_give(&blink_event);

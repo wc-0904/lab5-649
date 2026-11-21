@@ -1,8 +1,10 @@
 # Lab 5 remaining work and open design decisions
 
-Status as of 2026-11-17. The handout is due 2026-11-18 23:59, but late days cover the
+Status as of 2026-11-21. The handout is due 2026-11-18 23:59, but late days cover the
 schedule, so this list is ordered by dependency rather than by the calendar.
-Nothing in Parts 1 through 7 is implemented. What exists is the Lab 3 firmware this
+P0 through P6 are done and verified on hardware; P7 through P15 remain. The
+paragraph below describes the starting point this work was built from.
+What existed at the start was the Lab 3 firmware this
 directory was stripped down to: dual-CAN transport, the preemptive task set, the Lab 3
 CAN catalog, and the Pi cockpit. See `CLAUDE.md` for the spec and the current state.
 
@@ -150,49 +152,44 @@ consecutive receipts.
 | 2.5 | REF receive path and REF_RX toggle on followers | `lab_tasks.c` | SYNC on all three, REF_RX toggling |
 | 2.6 | Confirm REF wins arbitration against APPEND and CTRL under load | bench | Sync period does not jitter when a log entry is in flight |
 
-### RESUME HERE, 2026-11-19
+### RESUME HERE, 2026-11-21
 
-P2 is written, committed and pushed. Both images build clean. The bench is in a
-known-bad state that needs fixing first:
+P3 to P6 are written and all four are verified on hardware. Both Nucleos are
+running the P6 image (verify sizes 72 804 and 73 492) and reporting stable drift:
+N2 about +12 ppm, N3 about +29 ppm. Next phase is **P7, the PPS output**, which is
+also what finally measures `DELAY_US` and the receive timestamp jitter.
 
-**The board physically wired as N2 is running the N3 image.** Both boards report
-`node 3 (drivetrain)`: the one on `ACM1` has the new P2 firmware, the one on
-`ACM0` still has P1. The cluster currently has two node 3s and no node 2, so
-every heartbeat, peer-tracking and degraded result would be garbage until fixed.
+Bench facts worth not rediscovering:
 
-**`west flash -i <serial>` does not select the adapter here.** openocd matches a
-serial string that does not correspond to what `pyserial` prints, and on a failed
-match it silently falls back to the first adapter instead of erroring. Select by
-USB topology instead, which works with both boards attached:
-`--cmd-pre-init-flash "adapter usb location <bus>-<port>"`, reading the location
-from `python -m serial.tools.list_ports -v`. See README.md. Confirm the two
-flashes report different verify sizes.
+- **Flash both boards while both are attached** by selecting the adapter on USB
+  topology, not serial. `west flash -i <serial>` silently falls back to the first
+  adapter here, which once put the N3 image on N2.
 
-Recovery, one board attached at a time:
+  | | N2 | N3 |
+  |---|---|---|
+  | USB location | `1-1` | `1-2` |
+  | ST-LINK serial | `0671FF505487525067172616` | `0673FF514988525067191614` |
+  | console | `/dev/ttyACM0` | `/dev/ttyACM1` |
 
-```sh
-west flash -d build-demo-n2 -r openocd --no-rebuild --verify   # board wired as N2
-west flash -d build-demo-n3 -r openocd --no-rebuild --verify   # board wired as N3
-```
+  ```sh
+  west build -b nucleo_f401re/stm32f401xe -d build-demo-n2 . -- -DLAB_NODE_ID=2
+  west build -b nucleo_f401re/stm32f401xe -d build-demo-n3 . -- -DLAB_NODE_ID=3
+  west flash -d build-demo-n2 -r openocd --no-rebuild --verify \
+    --cmd-pre-init-flash "adapter usb location 1-1"
+  west flash -d build-demo-n3 -r openocd --no-rebuild --verify \
+    --cmd-pre-init-flash "adapter usb location 1-2"
+  ```
 
-Telling the images apart without trusting the serial:
+  Re-map the locations after moving cables between ports with:
+  `for d in /sys/bus/usb/devices/*; do [ -f "$d/idVendor" ] && [ "$(cat $d/idVendor)" = 0483 ] && echo "$(basename $d) $(cat $d/serial)"; done`
 
-| | N2 | N3 |
-|---|---|---|
-| image size in the verify line | 66 584 B | 67 272 B |
-| banner | `node 2 (steering)` | `node 3 (drivetrain)` |
-| `ACK=` in the banner | `0x046` | `0x047` |
+- **`west flash --no-rebuild` does not build.** Running only the flash commands
+  after a source change silently reflashes the previous binary. This cost one
+  debugging round on P6. Always run `west build` first, and confirm the verify
+  sizes changed.
 
-Then P2's remaining acceptance, checkoff step 2:
-
-1. Both banners carry `raft: term=1 role=FOLLOWER leader=cockpit` and
-   `raft    term=1 role=FOLLOWER leader=cockpit synced=0`.
-2. `git pull` on the Pi, run `cockpit.py`, and `candump -t d any` shows `008`
-   every 20 ms and `040` every 100 ms, with nothing in `041`..`054`.
-3. The cockpit's exit summary reports `skipped=0`; anything else means its event
-   loop is missing REF deadlines, which matters for P6.
-4. `SYNC` (PB13) goes high on the first REF and `REF_RX` (PB14) toggles at 25 Hz.
-   This is the first thing that needs those pins reachable, even by scope probe.
+- The Pi still runs the P5 cockpit until it pulls. Without the pull there is no
+  `sync: ... master=self` line to compare global seconds against.
 
 ### P3. Log and state machine, host testable  [IMPLEMENTED, host tested]
 
@@ -380,10 +377,124 @@ Settled here:
 | 5.4 | Routing table distilled from `getNetwork()` | `raft_client.c` | Per destination: which bus, or which relay |
 | 5.5 | Single-link fault run: pull one node's A jumper, then B | bench | DEG LEDs as in Lab 3, term unchanged everywhere, logs agree |
 
-### P6. Time synchronization
+### P6. Time synchronization  [DONE, verified on hardware 2026-11-21]
 
 Build the estimate on every node from the start, leader included, rather than only on
 followers. P9 depends on that and it is awkward to add afterwards.
+
+All six items are implemented in `src/time_sync.c`, `pi/demo/time_sync.py` and a
+`DRIFT` task slot in `lab_tasks.c`, with `tests/test_lab5_sync.py` compiling the C
+against a Zephyr stub and comparing it to the Pi byte for byte over drifting,
+jittered and wrapping reference sequences. 13 cases, passing. What was settled:
+
+- **D17 timestamp point.** The MCP2515 has no readable timestamp register, so the
+  earliest software point is the first statement of the receive callback, which
+  runs in the driver's preemptive priority 0 thread. `struct lab_rx` carries that
+  cycle count to the dispatch thread, and `raft_on_ref()` uses it rather than the
+  uptime it already had, which included the queue wait. The SPI read latency is
+  folded into `d`. On the Pi the counter is read at the socket read.
+- **D18 one-way delay.** Static, 300 microseconds, computed from the frame: about
+  128 bits after stuffing at 500 kbit/s is 256 microseconds on the wire, plus a
+  thirteen byte SPI read and interrupt latency. No round trip, as Part 6 requires.
+  P7 measures the residual on a scope; this is the starting point.
+- **D19 step versus slew.** `clock_settime(CLOCK_REALTIME, ...)` is called exactly
+  once, at the first reference, and the clock is then left free running. Stepping
+  it every 20 ms would move it backwards whenever the correction is negative and
+  break every timer scheduled across the step. All later correction lives in
+  `time_sync_global_us()`. `CONFIG_POSIX_TIMERS=y` was added to `prj.conf` for
+  this; nothing else in the image uses the POSIX layer.
+- **D20 ratio filtering.** Exponential average, weight 1/16, so roughly sixteen
+  intervals or a third of a second. A single 20 ms interval is mostly timestamp
+  noise: one microsecond of jitter over 20 ms reads as 50 ppm, far larger than any
+  real crystal error. Samples more than one percent from unity are rejected
+  outright as a missed reference or a restarted master, not drift.
+- **Arithmetic.** Everything is a difference taken over at most one heartbeat, so
+  the 32 bit cycle counter's wrap never enters the maths and no 64 bit extension
+  is needed. The ratio is Q16.16 fixed point, which removes the question of
+  floating point in a Zephyr thread and lets the host test be an exact equality
+  rather than a tolerance.
+- **Continuity.** The leader stamps REF from `master_us()`, which carries a
+  `master_offset_us` frozen at the moment a node adopts the master role. It is
+  zero on a cold boot and non-zero only after a handover, which is the mechanism
+  checkoff step 6's 100 microsecond bound depends on. P9 drives it.
+
+**Found on hardware, 2026-11-21.** The first bench run reported `ratio=7800 ppm`
+and `correction=150 us` on both Nucleos: three orders of magnitude more drift than
+a crystal has. Every REF goes out on both buses, and dispatch handles `LAB5_REF`
+before the dedup check, so `time_sync_on_ref()` ran on both copies. The copies
+carry the same `L_k`, so the ratio sample was correctly skipped, but the second
+copy still overwrote `F_k` with its later arrival. The next interval then measured
+20000 microseconds of master time against 20000 minus the inter-bus gap of local
+time, and the ratio absorbed the difference. The 150 microsecond correction was
+the gap between the two buses and nothing else.
+
+`time_sync_on_ref()` now ignores a reference that is not newer than the last one,
+which keeps the first copy, which is also the one with the least transport delay.
+A master more than a second behind is a handover rather than a copy, and resets
+the timeline while keeping the ratio, which describes this node's own crystal.
+`raft_on_ref()` also stops toggling `REF_RX` on the duplicate, so the marker reads
+as one edge per reference whether one bus is up or both; otherwise pulling a
+jumper at checkoff step 9 would look like the sync rate halving.
+`tests/test_lab5_sync.py` covers both, 15 cases.
+
+**Second bench run, 2026-11-21.** With the duplicate ignored the ratio centred on
+zero, but it wandered between +930 and -1511 ppm on both Nucleos, and those are
+already smoothed values. Working back through the average, the raw per-sample
+ratio spans roughly 5000 ppm, which over a 20 ms heartbeat is about **50
+microseconds of jitter on the receive timestamp**. That is the real D17 number,
+and it was hidden under the duplicate bug until now.
+
+That makes a ratio measured between consecutive references useless on its own
+terms: a crystal drifts by tens of ppm and the measurement noise is 2500, so the
+signal is forty times smaller than the error and no averaging weight recovers it.
+`RATIO_WINDOW_US` now measures the ratio across a **one second** span instead of
+one heartbeat, which divides the jitter's contribution by fifty, and the average
+weight was lightened to 1/4 since it no longer has to do that work alone.
+
+This does not slow the correction down, which is the part worth saying in the
+report: the base is still re-anchored on every reference, so the ratio only ever
+extrapolates across one 20 ms heartbeat. Even 1000 ppm of ratio error is 20
+microseconds there. The dominant PPS error will be the 50 microseconds of
+timestamp jitter itself, not the ratio, which is what P7 has to attack.
+`time_sync_locked()` now takes a second rather than two references, so the first
+`sync:` line appears a second after the first REF.
+
+**Third bench run, 2026-11-21: accepted.** With the one second window the ratio
+converges from 213 ppm down into a narrow band within about ten seconds and holds
+there. Settled means over twenty consecutive samples: **N2 about +12 ppm, N3 about
++29 ppm**. Both are well inside crystal specification, both are stable, and they
+differ from each other, which is what two independent crystals should do.
+`correction` equals `ratio` numerically because the window is exactly one second,
+so the console line reads directly as microseconds lost per second.
+
+Two observations for the report's drift section, both from this run:
+
+- **The residual is quantization, not noise.** Every reported value is a multiple
+  of 15.26 ppm, which is one LSB of Q16.16, and the sample to sample variation is
+  only two to four LSB. The filter has taken the noise down to the floor of the
+  representation, so there is nothing left for a heavier filter to remove.
+- **The remaining excursions are common mode, from the Pi.** Both nodes reported
+  `-123 ppm` within a second of each other, twice, in separate captures. Two
+  independent crystals do not deviate identically at the same instant, so that is
+  the master's transmit path: a REF stamped in Python and then delayed before it
+  reaches the wire, which both followers observe at once. The per-node drift is
+  clean; the outliers belong to the Pi as time master.
+
+**Optional, not done: raise `TIME_SYNC_RATIO_SHIFT` from 16 to 24.** One LSB
+becomes 0.06 ppm instead of 15.26, which matters because the signal being reported
+is 12 to 29 ppm and is currently resolved to two significant figures at best. The
+arithmetic still fits in 64 bits with margin: the widest intermediate is
+`master_delta << 24` at about 1.7e13 for a one second window, and
+`since * ratio` at about 3.4e11 for a 20 ms extrapolation. `pi/demo/time_sync.py`
+and the Q16.16 references in `tests/test_lab5_sync.py` have to move with it.
+
+This is cosmetic for the mechanism and only improves the reported numbers: 15 ppm
+of ratio error across one 20 ms heartbeat is 0.3 microseconds, far below the
+timestamp jitter. Worth doing before the drift data is collected for the report,
+not worth interrupting P7 for.
+
+Still open against the scope: `DELAY_US` is a calculation, not a measurement, and
+the only reference for absolute offset is PPS edge spread. P7 has to fix it.
 
 | # | Task | Where | Done when |
 |---|---|---|---|

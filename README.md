@@ -162,7 +162,10 @@ No scheduling/CPU-affinity policy is changed automatically.
 ## STM32 software timing observations
 
 Task indices: 0 dispatch, 1 STEER/DRIVE, 2 blink, 3 test/fault, 4 PID, 5 HB_TX,
-6 HB_MON, 7 FORCE, 8 RELAY (both STM32s). For example, configure N3 to trace PID on PC11:
+6 HB_MON, 7 FORCE, 8 RELAY (both STM32s), 9 diagnostics, 10 DRIFT. Index 10 is the
+Lab 5 time-synchronization report task; it runs once a second and is deliberately
+outside the watchdog's progress check, which only covers indices 0 to 8. For
+example, configure N3 to trace PID on PC11:
 
 ```sh
 west build -b nucleo_f401re/stm32f401xe -d build-demo-n3 . -- -DLAB_NODE_ID=3 -DLAB_TRACE_TASK=4

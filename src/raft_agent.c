@@ -8,8 +8,10 @@
 #include "cluster_config.h"
 #include "lab_can.h"
 #include "lab_io.h"
+#include "time_sync.h"
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
+#include <time.h>
 
 /** @brief Term every node adopts when a pre-defined leader is configured. */
 #define BOOT_TERM 1
@@ -170,11 +172,36 @@ bool raft_synced(void)
 	return synced;
 }
 
+/** @brief Set CLOCK_REALTIME from the master clock, once.
+ *
+ * Part 6 asks for the system time to be set from the adjusted leader time, and
+ * also for a correcting global_gettime(). Those pull against each other: a step
+ * applied every heartbeat would move CLOCK_REALTIME backwards whenever the
+ * correction is negative, and every Zephyr timer scheduled across the step
+ * would fire early or late. So the system clock is set exactly once, at the
+ * first reference, to put it on the master's timeline, and is then left free
+ * running. All subsequent correction is carried in time_sync_global_us()
+ * (TASKS.md D19). The system clock's own resolution is one tick, which is far
+ * coarser than the global timeline, so nothing that needs precision reads it.
+ * @param master_us Leader clock from the first reference.
+ */
+static void set_system_clock(uint64_t master_us)
+{
+	struct timespec ts = {
+		.tv_sec = (time_t)(master_us / 1000000U),
+		.tv_nsec = (long)(master_us % 1000000U) * 1000,
+	};
+
+	if (clock_settime(CLOCK_REALTIME, &ts) != 0 && LAB5_CFG_DEBUG) {
+		printk("raft: clock_settime failed\n");
+	}
+}
+
 /** @brief Apply a received REF frame.
  * @param data Eight received bytes.
  * @param local_us Local clock when the frame was taken off the queue.
  */
-void raft_on_ref(const uint8_t data[8], uint64_t local_us)
+void raft_on_ref(const uint8_t data[8], uint64_t local_us, uint32_t local_cycles)
 {
 	struct lab5_ref ref = lab5_ref_decode(data);
 	int64_t now = k_uptime_get();
@@ -183,6 +210,7 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us)
 	bool report_gap = false;
 	bool restarted = false;
 	bool first;
+	bool copy = false;
 
 	k_spinlock_key_t key = k_spin_lock(&state_lock);
 
@@ -190,7 +218,17 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us)
 	if (state.have_cycle) {
 		uint16_t step = (uint16_t)(ref.cycle - state.cycle);
 
-		if (step >= CYCLE_RESTART_STEP) {
+		if (step == 0) {
+			/*
+			 * The same reference arriving on the other bus. The
+			 * liveness timer is still refreshed below, since the
+			 * node did hear from the master, but REF_RX must not
+			 * toggle twice: the marker has to read as one edge per
+			 * reference whether one bus is up or both, or pulling a
+			 * jumper appears to halve the sync rate.
+			 */
+			copy = true;
+		} else if (step >= CYCLE_RESTART_STEP) {
 			restarted = true;
 		} else if (step > 1) {
 			gap = (uint32_t)(step - 1);
@@ -211,9 +249,20 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us)
 	state.last_local_us = local_us;
 	k_spin_unlock(&state_lock, key);
 
+	/*
+	 * Feed the global timeline before anything that can block or print. The
+	 * cycle count, not local_us, is the sync instant: local_us is read here
+	 * in the dispatch thread and so carries the queue wait, while the cycle
+	 * count was taken in the receive callback (TASKS.md D17).
+	 */
+	time_sync_on_ref(ref.master_us, local_cycles);
+	if (copy) {
+		return;
+	}
 	lab_io_toggle(LAB_REF_RX);
 	if (first) {
 		lab_io_set(LAB_SYNC, true);
+		set_system_clock(ref.master_us);
 	}
 	if (!LAB5_CFG_DEBUG) {
 		return;

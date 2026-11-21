@@ -12,6 +12,7 @@ from protocol import (APPEND, APPEND_ACK_BASE, CLIENT_REQ_BASE,
                       lab5_id_for)
 from network_state import (APPEND_ACCEPTED, Network, RaftLog,
                            event_link, event_name, event_node)
+from time_sync import TimeSync, local_cycles as local_cycles_now
 
 #: Roles a node can hold.
 FOLLOWER, CANDIDATE, LEADER = "FOLLOWER", "CANDIDATE", "LEADER"
@@ -242,6 +243,12 @@ class RaftAgent:
         self.ref_timer = Periodic(self.heartbeat)
         self.append_timer = Periodic(APPEND_PERIOD)
         self.catchup_timer = Periodic(self.heartbeat)
+        # Global timeline. A leader is its own master, so this stays idle until
+        # a remote REF arrives; it is what keeps the timeline continuous across
+        # the handover P9 adds.
+        self.sync = TimeSync(hz=1000000)
+        self.master_offset_us = 0
+        self.refs_received = 0
 
     def is_leader(self):
         """Report whether this node currently leads.
@@ -253,11 +260,57 @@ class RaftAgent:
     def master_us(self):
         """Read the master clock this node stamps into REF.
 
-        CLOCK_REALTIME, so the value is comparable with the followers' system
-        time once P6 sets it. Resolution is microseconds.
+        CLOCK_REALTIME plus any offset carried over from a period when this
+        node was following someone else. The offset is zero on a cold boot with
+        a pre-defined leader, and non-zero only after this node has taken the
+        master role over from another, which is what keeps the global timeline
+        from stepping at the handover.
         :return: Master clock in microseconds.
         """
-        return time.clock_gettime_ns(time.CLOCK_REALTIME) // 1000
+        return time.clock_gettime_ns(time.CLOCK_REALTIME) // 1000 + self.master_offset_us
+
+    def on_ref(self, data, local_cycles=None):
+        """Apply a reference message from a remote time master.
+
+        Only meaningful while following: a leader hears its own REF back on the
+        other bus and must not synchronize to itself.
+        :param data: Eight received bytes.
+        :param local_cycles: Local counter at receipt, defaulting to now.
+        :return: True when the reference was applied.
+        """
+        if self.is_leader():
+            return False
+        master_us, cycle = ref_decode(data)
+        self.sync.on_ref(master_us, local_cycles if local_cycles is not None
+                         else local_cycles_now())
+        self.cycle = cycle
+        self.refs_received += 1
+        return True
+
+    def global_us(self, local_cycles=None):
+        """Read the global time this node believes in.
+
+        :param local_cycles: Local counter to evaluate at, defaulting to now.
+        :return: Global microseconds.
+        """
+        if self.is_leader() or not self.sync.have_last:
+            return self.master_us()
+        return self.sync.global_us(local_cycles if local_cycles is not None
+                                   else local_cycles_now())
+
+    def adopt_master_role(self):
+        """Carry the current global estimate into this node's own clock.
+
+        Called when this node becomes the time master. Freezing the difference
+        between the estimate it was already tracking and its own clock means
+        the REF it starts sending continues the same timeline rather than
+        jumping to its local realtime clock.
+        """
+        if not self.sync.have_last:
+            return
+        estimate = self.sync.global_us(local_cycles_now())
+        own = time.clock_gettime_ns(time.CLOCK_REALTIME) // 1000
+        self.master_offset_us = estimate - own
 
     def ref_tx(self, now):
         """Send REF at the configured heartbeat period when leading.

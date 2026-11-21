@@ -43,8 +43,11 @@ bool raft_synced(void);
  * cycle counter as a missed reference.
  * @param data Eight received bytes.
  * @param local_us Local clock when the frame was taken off the queue.
+ * @param local_cycles Cycle counter captured in the receive callback, which is
+ *        the F_k of the sync arithmetic and is not the same instant as
+ *        local_us: that one includes the queue wait.
  */
-void raft_on_ref(const uint8_t data[8], uint64_t local_us);
+void raft_on_ref(const uint8_t data[8], uint64_t local_us, uint32_t local_cycles);
 /** @brief Age out the time master when references stop arriving.
  *
  * Called periodically from the monitor task. SYNC must mean that this node is

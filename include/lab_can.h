@@ -5,8 +5,19 @@
 #ifndef LAB_CAN_H_
 #define LAB_CAN_H_
 #include <zephyr/drivers/can.h>
-/** @brief Received frame with physical bus and callback timestamp. */
-struct lab_rx { struct can_frame frame; int64_t time_ms; uint8_t bus; };
+/** @brief Received frame with physical bus and callback timestamps.
+ *
+ * `cycles` is taken as the first statement of the receive callback, which runs
+ * in the MCP2515 driver's interrupt thread at preemptive priority zero. That is
+ * the earliest point software can reach: the MCP2515 has no timestamp register
+ * readable without a further SPI transaction, so the SPI read of the frame is
+ * already behind us and is folded into the one way delay estimate instead
+ * (TASKS.md D17). Cycle resolution is the CPU clock, and only differences are
+ * ever taken, so the 32 bit wrap at about 51 seconds never matters.
+ */
+struct lab_rx {
+	struct can_frame frame; int64_t time_ms; uint32_t cycles; uint8_t bus;
+};
 /** @brief Initialize both normal-mode controllers and catalog filters.
  * @return Zero or initialization failure; starts independent TX workers.
  */
