@@ -17,23 +17,62 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "pi" / "demo"))
 
-from network_state import (COCKPIT_ERROR, COCKPIT_OK, LOG_RING, Network, RaftLog,
-                           event_link, event_name, event_node)
+from network_state import (APPEND_ACCEPTED, APPEND_FORGOTTEN, APPEND_MISMATCH,
+                           APPEND_MISSING, APPEND_STALE_TERM, COCKPIT_ERROR,
+                           COCKPIT_OK, LOG_RING, Network, RaftLog, event_link,
+                           event_name, event_node)
 
 HARNESS = r"""
 #include "network_state.h"
 #include "raft_log.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static struct raft_log log_storage;
 
+static const char *name(enum raft_append_result r)
+{
+	switch (r) {
+	case RAFT_APPEND_ACCEPTED: return "ACCEPTED";
+	case RAFT_APPEND_STALE_TERM: return "STALE_TERM";
+	case RAFT_APPEND_MISSING: return "MISSING";
+	case RAFT_APPEND_MISMATCH: return "MISMATCH";
+	default: return "FORGOTTEN";
+	}
+}
+
+/*
+ * "replay <through>" reads "term event" lines and prints the graph.
+ * "accept" reads "current leader prev_index prev_term count event" lines and
+ * prints the outcome and match index of each.
+ */
 int main(int argc, char **argv)
 {
-	unsigned through = argc > 1 ? (unsigned)strtoul(argv[1], NULL, 0) : 0;
-	unsigned term, event;
+	const char *mode = argc > 1 ? argv[1] : "replay";
 
 	raft_log_init(&log_storage);
+	if (strcmp(mode, "accept") == 0) {
+		unsigned cur, lead, prev_index, prev_term, count, event;
+		uint32_t match;
+
+		while (scanf("%u %u %u %u %u %u", &cur, &lead, &prev_index,
+			     &prev_term, &count, &event) == 6) {
+			enum raft_append_result r = raft_log_accept(
+				&log_storage, (uint8_t)cur, (uint8_t)lead, prev_index,
+				(uint8_t)prev_term, (uint8_t)count, (uint8_t)event,
+				&match);
+
+			printf("%s %u\n", name(r), match);
+		}
+		printf("%u %u\n", raft_log_first_index(&log_storage),
+		       raft_log_last_index(&log_storage));
+		return 0;
+	}
+
+	unsigned through = argc > 2 ? (unsigned)strtoul(argv[2], NULL, 0) : 0;
+	unsigned term, event;
+
 	while (scanf("%u %u", &term, &event) == 2) {
 		raft_log_append(&log_storage, (uint8_t)term, (uint8_t)event);
 	}
@@ -80,7 +119,7 @@ class StateMachineTests(unittest.TestCase):
         :return: (rendered graph, first index, last index).
         """
         feed = "".join("%d %d\n" % (term, event) for event in events)
-        result = subprocess.run([str(self.binary), str(through)], input=feed,
+        result = subprocess.run([str(self.binary), "replay", str(through)], input=feed,
                                 capture_output=True, text=True, check=True)
         rendered, indices = result.stdout.splitlines()[:2]
         first, last = (int(value) for value in indices.split())
@@ -200,6 +239,115 @@ class StateMachineTests(unittest.TestCase):
         self.assertEqual(self.py_replay(events), (rendered, first, last))
         # The dropped NODE_cockpit_UP is no longer reflected in the graph.
         self.assertEqual(rendered, "net nodes=... links=...... mode=OK")
+
+    def c_accept(self, offers):
+        """Run a sequence of AppendEntries offers through the C implementation.
+
+        :param offers: (current_term, leader_term, prev_index, prev_term,
+            count, event) tuples.
+        :return: (list of (outcome, match index), first index, last index).
+        """
+        feed = "".join("%d %d %d %d %d %d\n" % offer for offer in offers)
+        result = subprocess.run([str(self.binary), "accept"], input=feed,
+                                capture_output=True, text=True, check=True)
+        lines = result.stdout.splitlines()
+        outcomes = [(parts[0], int(parts[1]))
+                    for parts in (line.split() for line in lines[:-1])]
+        first, last = (int(value) for value in lines[-1].split())
+        return outcomes, first, last
+
+    def py_accept(self, offers):
+        """Run the same offers through the Python implementation.
+
+        :param offers: Same shape as c_accept.
+        :return: (list of (outcome, match index), first index, last index).
+        """
+        log = RaftLog(LOG_RING)
+        outcomes = [log.accept(*offer) for offer in offers]
+        return outcomes, log.first_index(), log.last_index()
+
+    def assert_accept_same(self, offers):
+        """Assert both implementations handle the same offers identically.
+
+        :param offers: Same shape as c_accept.
+        :return: The shared result.
+        """
+        mine = self.py_accept(offers)
+        theirs = self.c_accept(offers)
+        self.assertEqual(mine, theirs)
+        return mine
+
+    def test_appending_onto_an_empty_log(self):
+        up = event_node(1, True)
+        outcomes, first, last = self.assert_accept_same([(1, 1, 0, 0, 1, up)])
+        self.assertEqual(outcomes, [(APPEND_ACCEPTED, 1)])
+        self.assertEqual((first, last), (1, 1))
+
+    def test_an_empty_append_matches_without_growing_the_log(self):
+        up = event_node(1, True)
+        outcomes, _, last = self.assert_accept_same(
+            [(1, 1, 0, 0, 1, up), (1, 1, 1, 1, 0, 0)])
+        self.assertEqual(outcomes[1], (APPEND_ACCEPTED, 1))
+        self.assertEqual(last, 1)
+
+    def test_a_stale_leader_term_is_rejected(self):
+        outcomes, _, last = self.assert_accept_same([(5, 4, 0, 0, 1, COCKPIT_OK)])
+        self.assertEqual(outcomes, [(APPEND_STALE_TERM, 0)])
+        self.assertEqual(last, 0)
+
+    def test_a_gap_is_reported_with_our_last_index_so_the_leader_can_back_up(self):
+        up = event_node(1, True)
+        offers = [(1, 1, 0, 0, 1, up), (1, 1, 5, 1, 1, COCKPIT_OK)]
+        outcomes, _, last = self.assert_accept_same(offers)
+        self.assertEqual(outcomes[1], (APPEND_MISSING, 1))
+        self.assertEqual(last, 1)
+
+    def test_a_conflicting_tail_is_dropped(self):
+        # Store index 1 in term 1, then a leader in term 2 disagrees about it.
+        offers = [(1, 1, 0, 0, 1, event_node(1, True)),
+                  (1, 1, 1, 1, 1, event_node(2, True)),
+                  (2, 2, 1, 2, 1, event_node(3, True))]
+        outcomes, _, last = self.assert_accept_same(offers)
+        self.assertEqual(outcomes[2][0], APPEND_MISMATCH)
+        # Index 1 disagreed, so everything from there is gone.
+        self.assertEqual(last, 0)
+
+    def test_resending_the_same_entry_is_idempotent(self):
+        # Every frame goes out on both buses and may also arrive relayed.
+        up = event_node(1, True)
+        offer = (1, 1, 0, 0, 1, up)
+        outcomes, _, last = self.assert_accept_same([offer, offer, offer])
+        self.assertEqual(outcomes, [(APPEND_ACCEPTED, 1)] * 3)
+        self.assertEqual(last, 1)
+
+    def test_a_later_term_overwrites_the_same_index(self):
+        offers = [(1, 1, 0, 0, 1, event_node(1, True)),
+                  (2, 2, 0, 0, 1, event_node(2, True))]
+        outcomes, _, last = self.assert_accept_same(offers)
+        self.assertEqual(outcomes[1], (APPEND_ACCEPTED, 1))
+        self.assertEqual(last, 1)
+
+    def test_catch_up_replays_a_follower_from_behind(self):
+        # D11: a rejoining node catches up over AppendEntries, no flash needed.
+        events = [event_node(n, True) for n in (1, 2, 3)]
+        offers = [(1, 1, i, 1 if i else 0, 1, event)
+                  for i, event in enumerate(events)]
+        outcomes, _, last = self.assert_accept_same(offers)
+        self.assertEqual([o[0] for o in outcomes], [APPEND_ACCEPTED] * 3)
+        self.assertEqual(last, 3)
+        self.assertEqual(self.py_replay(events)[0], "net nodes=CSD links=...... mode=OK")
+
+    def test_random_offer_sequences_behave_identically(self):
+        rng = random.Random(20261121)
+        pool = [event_node(n, up) for n in (1, 2, 3) for up in (True, False)]
+        for trial in range(150):
+            offers = []
+            for _ in range(rng.randrange(1, 12)):
+                offers.append((rng.randrange(0, 3), rng.randrange(0, 3),
+                               rng.randrange(0, 5), rng.randrange(0, 3),
+                               rng.randrange(0, 2), rng.choice(pool)))
+            with self.subTest(trial=trial):
+                self.assert_accept_same(offers)
 
     def test_event_names_match_the_handout_vocabulary(self):
         self.assertEqual(event_name(event_node(1, True)), "NODE_cockpit_UP")

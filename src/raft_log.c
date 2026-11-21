@@ -146,6 +146,79 @@ bool raft_log_get(const struct raft_log *log, uint32_t index, struct raft_entry 
 	return true;
 }
 
+/** @brief Drop every entry from an index onward.
+ * @param log Log to shorten.
+ * @param from Index of the first entry to drop; 1 clears the log.
+ */
+void raft_log_truncate(struct raft_log *log, uint32_t from)
+{
+	if (log->count == 0 || from > raft_log_last_index(log)) {
+		return;
+	}
+	if (from <= log->first) {
+		log->count = 0;
+		return;
+	}
+	log->count = from - log->first;
+}
+
+/** @brief Apply the Raft AppendEntries consistency check.
+ * @param log Log to update.
+ * @param current_term Term this node believes it is in.
+ * @param leader_term Term from the AppendEntries header.
+ * @param prev_index Index preceding the carried entry.
+ * @param prev_term Term of that preceding entry.
+ * @param count Entries carried, 0 or 1.
+ * @param event Event of the carried entry, when count is 1.
+ * @param match_index Highest index now known to match the leader.
+ * @return What happened; only RAFT_APPEND_ACCEPTED changes the log.
+ */
+enum raft_append_result raft_log_accept(struct raft_log *log, uint8_t current_term,
+					uint8_t leader_term, uint32_t prev_index,
+					uint8_t prev_term, uint8_t count,
+					uint8_t event, uint32_t *match_index)
+{
+	uint8_t have;
+
+	*match_index = 0;
+	if (leader_term < current_term) {
+		return RAFT_APPEND_STALE_TERM;
+	}
+	if (prev_index > raft_log_last_index(log)) {
+		*match_index = raft_log_last_index(log);
+		return RAFT_APPEND_MISSING;
+	}
+	if (prev_index != 0 && log->count != 0 && prev_index < log->first) {
+		/* The ring dropped it, so the check cannot be made at all. */
+		return RAFT_APPEND_FORGOTTEN;
+	}
+	if (!raft_log_term_at(log, prev_index, &have)) {
+		return RAFT_APPEND_FORGOTTEN;
+	}
+	if (have != prev_term) {
+		/* Our tail disagrees: drop it so the leader can back up. */
+		raft_log_truncate(log, prev_index);
+		*match_index = raft_log_last_index(log);
+		return RAFT_APPEND_MISMATCH;
+	}
+	if (count != 0) {
+		uint32_t next = prev_index + 1;
+		struct raft_entry existing;
+
+		if (raft_log_get(log, next, &existing)) {
+			if (existing.term == leader_term && existing.event == event) {
+				/* Already stored: a duplicate copy, not a conflict. */
+				*match_index = next;
+				return RAFT_APPEND_ACCEPTED;
+			}
+			raft_log_truncate(log, next);
+		}
+		raft_log_append(log, leader_term, event);
+	}
+	*match_index = prev_index + (count != 0 ? 1 : 0);
+	return RAFT_APPEND_ACCEPTED;
+}
+
 /** @brief Term of a given index, for the AppendEntries consistency check.
  * @param log Log to read.
  * @param index Entry index; zero means the empty log before any entry.

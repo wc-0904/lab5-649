@@ -24,6 +24,14 @@ NODE_DOWN_BASE = 0x18
 LINK_UP_BASE = 0x20
 LINK_DOWN_BASE = 0x28
 
+#: Outcomes of offering an AppendEntries to a log, matching enum
+#: raft_append_result in include/raft_log.h.
+APPEND_ACCEPTED = "ACCEPTED"
+APPEND_STALE_TERM = "STALE_TERM"
+APPEND_MISSING = "MISSING"
+APPEND_MISMATCH = "MISMATCH"
+APPEND_FORGOTTEN = "FORGOTTEN"
+
 #: Node names in configured order, for event names and printing.
 NODE_NAMES = ("cockpit", "steering", "drivetrain")
 
@@ -126,6 +134,54 @@ class RaftLog:
         if not self.entries or not self.first <= index <= self.last_index():
             return None
         return self.entries[index - self.first]
+
+    def truncate(self, from_index):
+        """Drop every entry from an index onward.
+
+        :param from_index: Index of the first entry to drop; 1 clears the log.
+        """
+        if not self.entries or from_index > self.last_index():
+            return
+        if from_index <= self.first:
+            self.entries = []
+            return
+        del self.entries[from_index - self.first:]
+
+    def accept(self, current_term, leader_term, prev_index, prev_term, count, event):
+        """Apply the Raft AppendEntries consistency check.
+
+        Re-sending the same entry is harmless, which matters because every frame
+        goes out on both buses and may also arrive relayed.
+
+        :param current_term: Term this node believes it is in.
+        :param leader_term: Term from the AppendEntries header.
+        :param prev_index: Index preceding the carried entry.
+        :param prev_term: Term of that preceding entry.
+        :param count: Entries carried, 0 or 1.
+        :param event: Event of the carried entry, when count is 1.
+        :return: (outcome, match index).
+        """
+        if leader_term < current_term:
+            return APPEND_STALE_TERM, 0
+        if prev_index > self.last_index():
+            return APPEND_MISSING, self.last_index()
+        if prev_index != 0 and self.entries and prev_index < self.first:
+            return APPEND_FORGOTTEN, 0
+        have = self.term_at(prev_index)
+        if have is None:
+            return APPEND_FORGOTTEN, 0
+        if have != prev_term:
+            self.truncate(prev_index)
+            return APPEND_MISMATCH, self.last_index()
+        if count:
+            nxt = prev_index + 1
+            existing = self.get(nxt)
+            if existing is not None:
+                if existing == (leader_term, event):
+                    return APPEND_ACCEPTED, nxt
+                self.truncate(nxt)
+            self.append(leader_term, event)
+        return APPEND_ACCEPTED, prev_index + (1 if count else 0)
 
     def term_at(self, index):
         """Term of a given index, for the AppendEntries consistency check.

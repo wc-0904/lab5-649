@@ -91,6 +91,46 @@ uint32_t raft_log_first_index(const struct raft_log *log);
  * @return True when the index is retained, false when it is empty or dropped.
  */
 bool raft_log_get(const struct raft_log *log, uint32_t index, struct raft_entry *entry);
+/** @brief Outcome of offering an AppendEntries to a log. */
+enum raft_append_result {
+	/** Entries accepted, or already present and matching. */
+	RAFT_APPEND_ACCEPTED,
+	/** The leader's term is older than ours, so it is not the leader. */
+	RAFT_APPEND_STALE_TERM,
+	/** We do not have prevLogIndex yet: this follower is behind. */
+	RAFT_APPEND_MISSING,
+	/** We have prevLogIndex but at a different term: our tail is wrong. */
+	RAFT_APPEND_MISMATCH,
+	/** prevLogIndex fell out of the ring, so it cannot be checked. */
+	RAFT_APPEND_FORGOTTEN,
+};
+/** @brief Drop every entry from an index onward.
+ *
+ * Used when an AppendEntries reveals that our tail disagrees with the leader's.
+ * @param log Log to shorten.
+ * @param from Index of the first entry to drop; 1 clears the log.
+ */
+void raft_log_truncate(struct raft_log *log, uint32_t from);
+/** @brief Apply the Raft AppendEntries consistency check.
+ *
+ * Rejects a stale term, requires prevLogIndex and prevLogTerm to match, drops a
+ * conflicting tail, and appends the carried entry. Re-sending the same entry is
+ * harmless, which matters because every frame is transmitted on both buses and
+ * may also arrive relayed.
+ * @param log Log to update.
+ * @param current_term Term this node believes it is in.
+ * @param leader_term Term from the AppendEntries header.
+ * @param prev_index Index preceding the carried entry.
+ * @param prev_term Term of that preceding entry.
+ * @param count Entries carried, 0 for an empty append or 1 otherwise.
+ * @param event Event of the carried entry, when count is 1.
+ * @param match_index Set to the highest index now known to match the leader.
+ * @return What happened; only RAFT_APPEND_ACCEPTED changes the log.
+ */
+enum raft_append_result raft_log_accept(struct raft_log *log, uint8_t current_term,
+					uint8_t leader_term, uint32_t prev_index,
+					uint8_t prev_term, uint8_t count,
+					uint8_t event, uint32_t *match_index);
 /** @brief Term of a given index, for the AppendEntries consistency check.
  * @param log Log to read.
  * @param index Entry index; zero means the empty log before any entry.
