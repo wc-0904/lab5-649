@@ -295,7 +295,22 @@ sight of its heartbeat. Link detection, debounce and the redirect are P5.
 | 4.5 | Catch-up for a rejoining node, from **D11** | `raft_agent.c` | A node restarted mid-run converges to the same log |
 | 4.6 | Check the commit path against the watchdog, from **D30** | `lab_tasks.c` | A client blocking until commit never trips `iwdg` |
 
-### P5. Client, link detection and routing, checkoff step 4  [IMPLEMENTED, not yet on hardware]
+### P5. Client, link detection and routing, checkoff step 4  [DONE, verified on hardware 2026-11-20]
+
+Verified on the bench. Ten jumper transitions on N2's bus B produced exactly ten
+log entries, perfectly alternating DOWN and UP with no chatter, at the same
+index on all three consoles, with `term=1` throughout and only N2 ever sending a
+client request. That is checkoff step 4's wording satisfied: one entry per
+change at the same index everywhere, DEG LEDs as in Lab 3, term unchanged.
+
+The 60 ms debounce proved right on real jumper bounce; it was a guess before the
+bench and needed no adjustment.
+
+The run also exposed a gap since fixed: a node reported only link *changes*, so
+links that were already up at boot never entered the graph, leaving the rendered
+state showing steering's bus 1 and both of drivetrain's links permanently down.
+Each node now assumes both its links are down at init, so the first poll reports
+them coming up, which is how the leader already bootstrapped its own.
 
 Settled here:
 

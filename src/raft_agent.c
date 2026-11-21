@@ -67,7 +67,6 @@ static struct {
 	uint32_t commit_index;
 	/* Client: this node's own view of its two links. */
 	bool link_down[2];
-	bool link_known[2];
 	bool link_candidate[2];
 	int64_t link_changed_ms[2];
 	uint8_t pending_event;
@@ -90,6 +89,17 @@ void raft_agent_init(void)
 	raft_log_init(&state.log);
 	network_reset(&state.net);
 	state.commit_index = 0;
+	/*
+	 * Assume both links are down so the first poll reports them coming up.
+	 * An empty log replays to a graph with no links, so a node that only ever
+	 * reported changes would leave its own links missing from the graph until
+	 * someone moved a jumper. The leader bootstraps its own links the same way.
+	 */
+	for (int bus = 0; bus < 2; bus++) {
+		state.link_down[bus] = true;
+		state.link_candidate[bus] = true;
+		state.link_changed_ms[bus] = 0;
+	}
 	k_spin_unlock(&state_lock, key);
 
 	lab_io_set(LAB_LEADER, state.role == RAFT_LEADER);
@@ -343,13 +353,6 @@ void raft_client_poll(int64_t now_ms)
 	for (int bus = 0; bus < 2; bus++) {
 		bool down = lab_can_link_down(bus);
 
-		if (!state.link_known[bus]) {
-			/* First poll: adopt the state without reporting it. */
-			state.link_known[bus] = true;
-			state.link_down[bus] = down;
-			state.link_candidate[bus] = down;
-			continue;
-		}
 		if (down != state.link_candidate[bus]) {
 			state.link_candidate[bus] = down;
 			state.link_changed_ms[bus] = now_ms;
