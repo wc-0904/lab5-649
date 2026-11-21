@@ -224,7 +224,9 @@ void raft_on_append(const uint8_t data[8])
 	struct lab5_ack ack;
 	uint32_t match = 0;
 	uint32_t committed = 0;
+	uint32_t stored = 0;
 	bool advanced = false;
+	bool grew = false;
 	enum raft_append_result result;
 	char line[NETWORK_PRINT_SIZE];
 
@@ -236,9 +238,13 @@ void raft_on_append(const uint8_t data[8])
 		state.role = RAFT_FOLLOWER;
 		state.leader = 0;
 	}
+	uint32_t before = raft_log_last_index(&state.log);
+
 	result = raft_log_accept(&state.log, (uint8_t)state.term, header.term,
 				 header.prev_index, header.prev_term, header.count,
 				 header.event, &match);
+	stored = raft_log_last_index(&state.log);
+	grew = stored > before;
 	if (result == RAFT_APPEND_ACCEPTED) {
 		/* Commit no further than what we actually hold. */
 		uint32_t limit = raft_log_last_index(&state.log);
@@ -268,6 +274,13 @@ void raft_on_append(const uint8_t data[8])
 	/* Required by the Debug config key, and only on a change, so the 100 ms
 	 * empty append does not print forever.
 	 */
+	if (grew) {
+		/* Checkoff step 4 compares one entry per change at the same index
+		 * on every console, so print each stored entry, not just commits.
+		 */
+		printk("raft: store idx=%u term=%u %s\n", stored, header.term,
+		       raft_event_name(header.event));
+	}
 	if (advanced) {
 		printk("raft: commit idx=%u %s\n", committed, line);
 	} else if (result != RAFT_APPEND_ACCEPTED) {
