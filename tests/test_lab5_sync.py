@@ -21,11 +21,12 @@ from raft_agent import RaftAgent, ref_encode
 from cluster_config import load as load_cluster_config
 from time_sync import DELAY_US, RATIO_ONE, RATIO_WINDOW_US, TimeSync
 
-#: Ticks per second the stub reports, matching the Nucleo's 84 MHz core.
+#: Tick rate the harness drives the module at. Deliberately not the 1 MHz the
+#: firmware uses, so that a hard coded rate in time_sync.c would fail here.
 HZ = 84000000
 
-#: Stands in for zephyr/kernel.h. time_sync.c uses a spinlock, the cycle rate
-#: and the fixed width integer types, and nothing else.
+#: Stands in for zephyr/kernel.h. time_sync.c uses a spinlock and the fixed
+#: width integer types, and nothing else.
 KERNEL_STUB = r"""
 #ifndef KERNEL_STUB_H_
 #define KERNEL_STUB_H_
@@ -39,15 +40,10 @@ static inline void k_spin_unlock(struct k_spinlock *l, k_spinlock_key_t k)
 	(void)l;
 	(void)k;
 }
-static inline uint32_t sys_clock_hw_cycles_per_sec(void) { return %dU; }
 #endif
-""" % HZ
+"""
 
-#: Stands in for the generated cluster_config.h, which time_sync.c includes but
-#: does not read; the real header needs the build tree.
-CONFIG_STUB = "#ifndef CLUSTER_CONFIG_STUB_H_\n#define CLUSTER_CONFIG_STUB_H_\n#endif\n"
-
-HARNESS = r"""
+HARNESS = ('#define TICK_HZ %dU\n' % HZ) + r"""
 #include "time_sync.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -62,6 +58,7 @@ int main(void)
 {
 	char line[128];
 
+	time_sync_set_tick_hz(TICK_HZ);
 	time_sync_reset();
 	while (fgets(line, sizeof(line), stdin) != NULL) {
 		unsigned long long master_us;
@@ -90,7 +87,6 @@ class TimeSyncTests(unittest.TestCase):
         work = Path(cls.tmp.name)
         (work / "zephyr").mkdir()
         (work / "zephyr" / "kernel.h").write_text(KERNEL_STUB)
-        (work / "cluster_config.h").write_text(CONFIG_STUB)
         source = work / "harness.c"
         source.write_text(HARNESS)
         cls.binary = work / "harness"

@@ -7,6 +7,13 @@
 #include "time_sync.h"
 #include <zephyr/kernel.h>
 
+/** @brief Ticks per second of the counter passed to this module.
+ *
+ * Settable so the host tests can drive the arithmetic at a different rate, and
+ * so a change of time base cannot silently skew every measurement.
+ */
+static uint32_t tick_hz = 1000000U;
+
 /** @brief One way delay from the leader stamping L to this node capturing F.
  *
  * Estimated from CAN bus properties rather than a round trip, the way TTCAN
@@ -101,7 +108,17 @@ static struct k_spinlock lock;
  */
 uint64_t time_sync_cycles_to_us(uint32_t cycles)
 {
-	return (uint64_t)cycles * 1000000U / sys_clock_hw_cycles_per_sec();
+	return (uint64_t)cycles * 1000000U / tick_hz;
+}
+
+/** @brief Declare the rate of the counter this module is given.
+ * @param hz Ticks per second.
+ */
+void time_sync_set_tick_hz(uint32_t hz)
+{
+	if (hz != 0) {
+		tick_hz = hz;
+	}
 }
 
 /** @brief Forget any master and return to the unsynchronized state. */

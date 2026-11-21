@@ -5,6 +5,7 @@
  * @brief Independent priority-queued CAN transmit workers and bounded RX delivery.
  */
 #include "lab_can.h"
+#include "pps.h"
 #include "lab_io.h"
 #include "lab_protocol.h"
 #include <zephyr/sys/atomic.h>
@@ -52,7 +53,7 @@ K_THREAD_STACK_ARRAY_DEFINE(tx_stacks, 2, TX_STACK);
 static void receive_cb(const struct device *dev, struct can_frame *frame, void *user)
 {
 	/* First statement: this is the sync timestamp, so nothing precedes it. */
-	uint32_t cycles = k_cycle_get_32();
+	uint32_t cycles = pps_now();
 
 	ARG_UNUSED(dev);
 	struct lab_rx rx = {.frame = *frame, .time_ms = k_uptime_get(),

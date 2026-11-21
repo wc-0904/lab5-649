@@ -23,6 +23,13 @@
 #define TIME_SYNC_RATIO_SHIFT 16
 /** @brief A ratio of exactly one, meaning the local clock matches the master. */
 #define TIME_SYNC_RATIO_ONE (1 << TIME_SYNC_RATIO_SHIFT)
+/** @brief Declare the rate of the counter this module is given.
+ *
+ * Defaults to one microsecond per tick, which is what pps.c provides. The host
+ * tests set it to the rate they simulate.
+ * @param hz Ticks per second.
+ */
+void time_sync_set_tick_hz(uint32_t hz);
 /** @brief Forget any master and return to the unsynchronized state. */
 void time_sync_reset(void);
 /** @brief Apply one reference message.

@@ -7,7 +7,8 @@
 #include <zephyr/drivers/can.h>
 /** @brief Received frame with physical bus and callback timestamps.
  *
- * `cycles` is taken as the first statement of the receive callback, which runs
+ * `cycles` is the TIM5 microsecond counter that also drives the PPS compare,
+ * taken as the first statement of the receive callback, which runs
  * in the MCP2515 driver's interrupt thread at preemptive priority zero. That is
  * the earliest point software can reach: the MCP2515 has no timestamp register
  * readable without a further SPI transaction, so the SPI read of the frame is

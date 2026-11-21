@@ -152,14 +152,65 @@ consecutive receipts.
 | 2.5 | REF receive path and REF_RX toggle on followers | `lab_tasks.c` | SYNC on all three, REF_RX toggling |
 | 2.6 | Confirm REF wins arbitration against APPEND and CTRL under load | bench | Sync period does not jitter when a log entry is in flight |
 
-### RESUME HERE, 2026-11-21
+### RESUME HERE, 2026-11-21 (late)
 
-P3 to P6 are written and all four are verified on hardware. Both Nucleos are
-running the P6 image (verify sizes 72 804 and 73 492) and reporting stable drift:
-N2 about +12 ppm, N3 about +29 ppm. Next phase is **P7, the PPS output**, which is
-also what finally measures `DELAY_US` and the receive timestamp jitter.
+P3 to P6 are written and verified on hardware. **P7's STM32 half is written and
+builds clean on both targets, but has never been flashed or scoped.** That is the
+next thing to do, and it is the step that finally measures `DELAY_US` and the
+receive timestamp jitter.
 
-Bench facts worth not rediscovering:
+#### Where P6 left the numbers
+
+Drift settles at about **+12 ppm on N2 and +29 ppm on N3** and holds. The residual
+is Q16.16 quantization at 15.26 ppm per LSB, and the occasional outlier is common
+mode, appearing on both nodes at once, so it belongs to the Pi's transmit path and
+not to either crystal.
+
+#### What P7 added, not yet observed
+
+- `src/pps.c` and `include/pps.h`. TIM5 free runs at 1 MHz with channel 1 driving
+  PA0 in output compare mode, so the comparator moves the pin and no instruction
+  executes at the edge. The interrupt runs after each edge only to reprogram: the
+  rising edge schedules the fall 10 ms later, the fall schedules the next second
+  from the current estimate, so the schedule tracks the master every second rather
+  than free running from the first edge.
+- The deadline is the handout's inversion, `F_deadline = F_k + (T - base) / ratio`,
+  computed once per second in `arm_next_edge()`. There is no polling anywhere.
+- **The timestamp source moved from `k_cycle_get_32()` to the TIM5 counter**, so
+  F_k and the compare register share one time base and arming needs no conversion.
+  Resolution drops from 12 ns to 1 us, which is far below the measured jitter.
+  `time_sync_set_tick_hz()` makes the rate explicit, and the host tests drive it at
+  84 MHz on purpose so a hard coded 1 MHz would fail there.
+- **The per edge console line is printed from the drift task, not the interrupt.**
+  It was in the ISR first and that was wrong: the line takes milliseconds at 115200
+  baud, and blocking an interrupt that long once a second would hold off the CAN
+  receive workers and corrupt the timing being measured. The ISR records, a thread
+  prints.
+- `&timers5` is enabled in the overlay. No driver binds it; `pps.c` takes the
+  register base and clock specifier from the node and configures PA0 as TIM5
+  channel 1 itself, because the timers binding carries no pinctrl property.
+
+#### Do this first when you come back
+
+1. Flash both boards, start the cockpit, and confirm a `pps:` line appears once a
+   second on each STM32 alongside the existing `sync:` line. First edge should
+   arrive within about two seconds of the first REF.
+2. Scope PA0 on both Nucleos at once and measure the spread between the rising
+   edges. That number is the whole point of P7 and feeds the 13 point drift
+   section. Expect it to be dominated by the 50 microseconds of receive timestamp
+   jitter measured in P6, not by the ratio.
+3. With a spread in hand, adjust `DELAY_US` in `src/time_sync.c`. It is currently
+   300, which is a calculation from frame bit count and SPI read time, never a
+   measurement. A constant offset between two nodes' edges is this value being
+   wrong; the spread around it is jitter and will not move.
+4. Only then decide **D22**, PPS on the Pi. Python cannot do a hardware compare,
+   and the Pi is the default master, so its edge is the baseline every STM32 edge
+   is compared against. Options are a small C helper, pigpio, the kernel
+   `pps-gpio` driver, or accepting Python jitter and documenting it. Deliberately
+   left open until the STM32 spread is known, because that spread decides whether
+   Python's jitter is tolerable or has to go.
+
+#### Bench facts worth not rediscovering
 
 - **Flash both boards while both are attached** by selecting the adapter on USB
   topology, not serial. `west flash -i <serial>` silently falls back to the first
@@ -172,6 +223,7 @@ Bench facts worth not rediscovering:
   | console | `/dev/ttyACM0` | `/dev/ttyACM1` |
 
   ```sh
+  source ./setup_win.sh
   west build -b nucleo_f401re/stm32f401xe -d build-demo-n2 . -- -DLAB_NODE_ID=2
   west build -b nucleo_f401re/stm32f401xe -d build-demo-n3 . -- -DLAB_NODE_ID=3
   west flash -d build-demo-n2 -r openocd --no-rebuild --verify \
@@ -180,16 +232,21 @@ Bench facts worth not rediscovering:
     --cmd-pre-init-flash "adapter usb location 1-2"
   ```
 
-  Re-map the locations after moving cables between ports with:
+  The ST-LINK is invisible to WSL until attached with `usbipd` from an elevated
+  PowerShell. Re-map the locations after moving cables between ports with:
   `for d in /sys/bus/usb/devices/*; do [ -f "$d/idVendor" ] && [ "$(cat $d/idVendor)" = 0483 ] && echo "$(basename $d) $(cat $d/serial)"; done`
 
 - **`west flash --no-rebuild` does not build.** Running only the flash commands
   after a source change silently reflashes the previous binary. This cost one
-  debugging round on P6. Always run `west build` first, and confirm the verify
+  debugging round on P6. Always run `west build` first and confirm the verify
   sizes changed.
 
-- The Pi still runs the P5 cockpit until it pulls. Without the pull there is no
-  `sync: ... master=self` line to compare global seconds against.
+- On the Pi: `sudo python3 pi/demo/setup_can.py` once, then
+  `python3 pi/demo/cockpit.py --no-gpio --duration 120`. The Pi now has the P6
+  code once it pulls, so it prints its own `sync: ... master=self` line to compare
+  global seconds against.
+
+- Host tests: `python3 -m unittest discover -s tests -p "test_*.py"`, 103 cases.
 
 ### P3. Log and state machine, host testable  [IMPLEMENTED, host tested]
 
@@ -505,7 +562,24 @@ the only reference for absolute offset is PPS edge spread. P7 has to fix it.
 | 6.5 | `global_gettime()`, maintained continuously on every node | `time_sync.c` | Returns a corrected global time on leader and followers alike |
 | 6.6 | Periodic task printing the drift error being corrected | `lab_tasks.c` | Visible on all three consoles |
 
-### P7. PPS output
+### P7. PPS output  [STM32 half written and building, never flashed or scoped]
+
+Settled here, subject to what the scope says:
+
+- **D21, PPS timer.** TIM5 channel 1 on PA0, which `lab_io.c` already reserved
+  for this. TIM5 is the 32 bit timer on this part, so at the 1 MHz `pps.c`
+  prescales it to it wraps every 71 minutes rather than the 51 seconds a 32 bit
+  counter at the core clock would give.
+- **Output compare, not a counter alarm.** Zephyr's counter API would interrupt at
+  the right count and let the handler set the pin, but that puts interrupt latency
+  in the edge path, and with two CAN receive workers at preemptive priority 0 that
+  latency is a few microseconds and is not bounded. P6 measured the system noise
+  floor at 50 microseconds; adding an unbounded term to the one measurement worth
+  13 points is not worth the simplicity.
+- **One time base.** F_k is now the TIM5 counter rather than `k_cycle_get_32()`,
+  so the deadline is written straight to the compare register with no conversion.
+
+**D22 is deliberately still open.** See the resume block above.
 
 | # | Task | Where | Done when |
 |---|---|---|---|

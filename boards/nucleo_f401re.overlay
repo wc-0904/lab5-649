@@ -37,6 +37,18 @@
 	pinctrl-names = "default";
 };
 
+/*
+ * TIM5 is the pulse per second time base and the timestamp source for the whole
+ * sync path. It is 32 bit, which at the 1 MHz pps.c prescales it to wraps every
+ * 71 minutes rather than the 51 seconds a 32 bit counter at the core clock
+ * would give. No driver binds this node; pps.c takes the register base and the
+ * clock specifier from it and configures PA0 as TIM5 channel 1 itself, because
+ * the timers binding carries no pinctrl property. The pwm child stays disabled.
+ */
+&timers5 {
+	status = "okay";
+};
+
 &spi2 {
 	status = "disabled";
 };

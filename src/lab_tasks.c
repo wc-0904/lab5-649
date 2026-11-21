@@ -10,6 +10,7 @@
 #include "lab_protocol.h"
 #include "raft_agent.h"
 #include "time_sync.h"
+#include "pps.h"
 #include "cluster_config.h"
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/sys/atomic.h>
@@ -722,8 +723,29 @@ static void drift_task(void *a, void *b, void *c)
 		next += DRIFT_REPORT_MS;
 		uint32_t start = begin(DRIFT);
 
+		/*
+		 * The edges rearm each other in the timer interrupt, so this
+		 * only has to get the first one going once a timeline exists.
+		 */
+		pps_start();
+		struct pps_report edge;
+
+		/*
+		 * The edge line is the report's jitter data, so it is printed
+		 * here rather than in the timer interrupt that produced it.
+		 */
+		while (LAB5_CFG_DEBUG && pps_take_report(&edge)) {
+			printk("pps: edge=%u global=%llu.%06llu local=%u ratio=%d ppm "
+			       "correction=%d us\n", edge.edge,
+			       (unsigned long long)(edge.global_us / 1000000U),
+			       (unsigned long long)(edge.global_us % 1000000U),
+			       edge.local_ticks,
+			       (int)(((int64_t)(edge.ratio - TIME_SYNC_RATIO_ONE) *
+				      1000000) >> TIME_SYNC_RATIO_SHIFT),
+			       (int)edge.correction_us);
+		}
 		if (LAB5_CFG_DEBUG && time_sync_locked()) {
-			uint64_t global = time_sync_global_us(k_cycle_get_32());
+			uint64_t global = time_sync_global_us(pps_now());
 			int32_t ratio = time_sync_ratio();
 			/* Signed, so a slow local clock reads as a negative ppm. */
 			int32_t ppm = (int32_t)(((int64_t)(ratio - TIME_SYNC_RATIO_ONE) *
@@ -777,6 +799,12 @@ int lab_tasks_start(void)
 	if (rc != 0) {
 		return rc;
 	}
+	/* Before the transport: the receive callback timestamps from this counter. */
+	rc = pps_init();
+	if (rc != 0) {
+		return rc;
+	}
+	time_sync_set_tick_hz(PPS_TICK_HZ);
 	rc = lab_can_init();
 	if (rc != 0) {
 		return rc;
