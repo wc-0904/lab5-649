@@ -313,6 +313,11 @@ automatically after 128 by 11 recessive bits, returns to error active with a
 cleared transmit counter, and fails again on its next transmission. Each half of
 that cycle outlasts any debounce short enough to be useful.
 
+Final state verified: with everything connected the log reaches index 9 and all
+three consoles render `net nodes=CSD links=121212 mode=OK`, every node and every
+link present, same index, same text. Each Nucleo reports both of its own links
+and only its own.
+
 A fourth bench run found a lost update. A node carries one pending client
 request at a time, and both of its links settle together at boot, so the second
 link marked itself reported, found the pending slot occupied, and was dropped
