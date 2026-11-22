@@ -689,7 +689,46 @@ rather than hundreds of microseconds.
 | 7.4 | Scope all three PPS pins, record the spread | bench | A capture worth putting in the report |
 | 7.5 | Iterate on **D17** and **D20** against the measured spread | as above | The spread stops improving. This is where the 13 points are earned |
 
-### P8. Blinkers on global time, checkoff step 3
+### P8. Blinkers on global time, checkoff step 3  [WRITTEN, not yet on hardware]
+
+**D23 settled: the phase is a pure function of global time.**
+
+```c
+phase = (global_us / half_us) & 1
+```
+
+No message carries timing any more. Two nodes agree because they divide the same
+timeline, not because they were told to, so a node that reboots, is cut off, or
+joins late comes up already in step with nothing to restore. That is what makes
+checkoff step 7's "hazards return to 2 Hz" free rather than a resynchronization
+problem.
+
+Both half periods divide a second exactly, 250000 and 125000 microseconds, so an
+edge coincides with the PPS edge and the two can be scoped against each other.
+The phase is recomputed from the clock on every pass, never incremented, so
+nothing accumulates.
+
+Rate as signal: 2 Hz while the cockpit still leads, 4 Hz once an STM32 does,
+selected from `raft_leader()`. Checkoff step 6 asks for 4 Hz when the Pi is
+down, step 7 for the return to 2 Hz, and this gets both from the leader identity
+rather than from a second failure flag.
+
+Scheduling: far from an edge the task waits on the event semaphore with a 20 ms
+timeout so an error state change is acted on promptly; within 20 ms of an edge it
+sleeps to the deadline instead. Only the deadline sleep decides how closely two
+nodes agree, and the system tick is 100 microseconds against the 1 ms checkoff
+step 3 allows. If the bench shows that marginal, the upgrade is a second TIM5
+compare channel driving an interrupt, the same mechanism P7 uses for PPS, which
+would take it to a few microseconds.
+
+`pi/demo/cockpit.py` derives its phase the same way, so a candump and the lamps
+cannot disagree, and a direction change now transmits at once instead of waiting
+for an edge, so left, right and cancel feel immediate.
+
+`tests/test_lab5_blink.py`, 8 cases, pins the properties rather than the
+implementation: the rates divide a second, the phase is low at every whole
+second, two nodes 20 microseconds apart disagree only within 20 microseconds of
+an edge, and edges are exactly a half period apart with no accumulation.
 
 | # | Task | Where | Done when |
 |---|---|---|---|

@@ -41,6 +41,12 @@ def catalog_filters():
     return b"".join(struct.pack("=II", can_id, mask) for can_id, mask in exact)
 
 
+#: Half period of the normal blinker, microseconds. 2 Hz means two full on-off
+#: cycles a second, so an edge every 250 ms. Must match BLINK_HALF_US in
+#: src/lab_tasks.c; the two endpoints divide the same timeline.
+BLINK_HALF_US = 250000
+
+
 class Pins:
     """GPIO ownership via libgpiod v2, with explicit non-measuring opt-out."""
     # Lab 3 markers, then the Lab 5 outputs. See docs/DEMO_WIRING.md.
@@ -359,7 +365,20 @@ class Cockpit:
         self.show_raft_state()
 
     def blink_tx(self, now):
-        """Master normal edges at 500 ms, fault hazard edges at 250 ms."""
+        """Announce which lamps are selected; the nodes own the phase.
+
+        From P8 the blink phase is a pure function of global time on every
+        node, so this message no longer carries timing. It carries intent:
+        left, right, both or cancel. The phase byte is still sent because the
+        Lab 3 catalog defines the frame that way and the two endpoints have to
+        agree on the layout, and because it is a useful cross check against the
+        node's own phase when reading a candump.
+
+        A direction change goes out at once rather than waiting for an edge, so
+        left, right and cancel feel immediate at the checkoff.
+
+        :param now: Monotonic time from the caller's loop.
+        """
         desired = 3 if self.error else self.desired_blink
         if now - self.last_blink < .020:
             return
@@ -367,10 +386,22 @@ class Cockpit:
         if not changed and now < self.next_edge:
             return
         self.blink_state = desired
-        self.phase = 1 if changed else self.phase ^ 1
+        self.phase = int(self.blink_phase())
         self.send(BLINK, bytes((desired, self.phase)))
         self.last_blink = now
         self.next_edge = now + (.250 if self.error else .500)
+
+    def blink_phase(self):
+        """Derive the blink phase from global time, as the nodes do.
+
+        Must match blink_phase() in src/lab_tasks.c: the same division of the
+        same timeline, so the Pi's view of the phase and a node's cannot drift
+        apart. Hazards run fast only when the cockpit itself is gone, which
+        cannot be true here, so this node always uses the 2 Hz half period.
+
+        :return: True for the lit half of the cycle.
+        """
+        return (self.agent.global_us() // BLINK_HALF_US) % 2 == 1
 
     def drift_report(self):
         """Print the global time and the drift the timeline is correcting for.

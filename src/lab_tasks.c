@@ -375,6 +375,72 @@ static void output_task(void *a, void *b, void *c)
 	}
 }
 
+/** @brief Half period of the normal blinker, microseconds.
+ *
+ * 2 Hz means the lamp completes two on-off cycles a second, so the period is
+ * 500 ms and an edge falls every 250 ms. Lab 3's LAB_BLINK_MS of 500 is the
+ * same figure expressed as a period.
+ */
+#define BLINK_HALF_US 250000U
+/** @brief Half period of the failure mode hazard, microseconds.
+ *
+ * 4 Hz, which checkoff step 6 asks for once the cockpit is gone. The rate is
+ * the signal: 2 Hz means the vehicle is in the error state with the cockpit
+ * still alive, 4 Hz means the cockpit itself is down and an STM32 is leading.
+ * Step 7 watches it return to 2 Hz when the Pi rejoins.
+ */
+#define HAZARD_FAST_HALF_US 125000U
+/** @brief Longest the blinker may sleep when no edge is near, milliseconds.
+ *
+ * Far from an edge the task waits on the event semaphore so an error state
+ * change is acted on promptly; near one it sleeps to the deadline instead.
+ */
+#define BLINK_COARSE_MS 20
+
+/** @brief Read the timeline the blinkers are scheduled on.
+ *
+ * Falls back to local uptime when no master has been seen, so a node on the
+ * bench on its own still blinks; it simply will not agree with anyone.
+ * @return Microseconds on the chosen timeline.
+ */
+static uint64_t blink_clock_us(void)
+{
+	if (time_sync_locked()) {
+		uint64_t global = time_sync_global_us(pps_now());
+
+		if (global != 0) {
+			return global;
+		}
+	}
+	return (uint64_t)k_uptime_get() * 1000U;
+}
+
+/** @brief Derive the blink phase from the clock alone.
+ *
+ * This is the whole of D23. The phase is a pure function of global time, so
+ * every node computes the same value at the same instant with no message and no
+ * agreement protocol: a node can join, reboot or be cut off and still come up
+ * in step. Both half periods divide a second exactly, so an edge coincides with
+ * the PPS edge and the two can be scoped against each other.
+ * @param clock_us Current time on the blink timeline.
+ * @param half_us Half period.
+ * @return True for the lit half of the cycle.
+ */
+static bool blink_phase(uint64_t clock_us, uint32_t half_us)
+{
+	return ((clock_us / half_us) & 1U) != 0;
+}
+
+/** @brief Microseconds remaining until the phase next changes.
+ * @param clock_us Current time on the blink timeline.
+ * @param half_us Half period.
+ * @return Microseconds to the next edge, never zero.
+ */
+static uint32_t blink_until_edge_us(uint64_t clock_us, uint32_t half_us)
+{
+	return half_us - (uint32_t)(clock_us % half_us);
+}
+
 /** @brief Apply master edges; error hazards use an explicit 250 ms half-period.
  * @param a Unused.
  * @param b Unused.
@@ -386,39 +452,51 @@ static void blink_task(void *a, void *b, void *c)
 	ARG_UNUSED(b);
 	ARG_UNUSED(c);
 	uint8_t value[2] = {0};
-	int64_t hazard_edge = 0;
-	bool phase = true;
-	bool was_error = false;
-	while (true) {
 
-		(void)k_sem_take(&blink_event, K_MSEC(20));
+	while (true) {
 		uint32_t start = begin(BLINK);
 		struct shared_state s = snapshot();
-		while (k_msgq_get(&blink_queue, value, K_NO_WAIT) == 0) {
+		uint64_t clock_us = blink_clock_us();
+		/*
+		 * Hazards run fast only when the cockpit itself is gone, which
+		 * is what the leader identity tells us. An error state with the
+		 * cockpit still leading stays at 2 Hz.
+		 */
+		uint32_t half_us = (s.error && raft_leader() != LAB_NODE_COCKPIT) ?
+			HAZARD_FAST_HALF_US : BLINK_HALF_US;
+		bool phase = blink_phase(clock_us, half_us);
 
-			if (!s.error) {
-				lab_io_set(LAB_LEFT, (value[0] == 1 || value[0] == 3) && value[1]);
-				lab_io_set(LAB_RIGHT, (value[0] == 2 || value[0] == 3) && value[1]);
-			}
+		while (k_msgq_get(&blink_queue, value, K_NO_WAIT) == 0) {
+			/* Direction only. The phase is the clock's, not the Pi's. */
 		}
 		if (s.error) {
-			int64_t now = k_uptime_get();
-			if (!was_error) {
-
-				phase = true;
-				hazard_edge = now + 250;
-			} else if (now >= hazard_edge) {
-				phase = !phase;
-				hazard_edge = now + 250;
-			}
+			/* Hazard: both sides together, and HZ marks the phase. */
 			lab_io_set(LAB_LEFT, phase);
 			lab_io_set(LAB_RIGHT, phase);
-		} else if (was_error) {
-			lab_io_set(LAB_LEFT, (value[0] == 1 || value[0] == 3) && value[1]);
-			lab_io_set(LAB_RIGHT, (value[0] == 2 || value[0] == 3) && value[1]);
+		} else {
+			bool left = value[0] == 1 || value[0] == 3;
+			bool right = value[0] == 2 || value[0] == 3;
+
+			lab_io_set(LAB_LEFT, left && phase);
+			lab_io_set(LAB_RIGHT, right && phase);
 		}
-		was_error = s.error;
+		lab_io_set(LAB_HZ, phase);
 		finish(BLINK, start);
+
+		uint32_t wait_us = blink_until_edge_us(clock_us, half_us);
+
+		if (wait_us > BLINK_COARSE_MS * 1000U) {
+			/* Far from an edge: stay responsive to an error change. */
+			(void)k_sem_take(&blink_event, K_MSEC(BLINK_COARSE_MS));
+		} else {
+			/*
+			 * Near one: sleep to the deadline. Checkoff step 3
+			 * allows 1 ms between FL and RL, and the two nodes only
+			 * agree to the extent that each lands on its own
+			 * deadline rather than on a polling boundary.
+			 */
+			k_sleep(K_USEC(wait_us));
+		}
 	}
 }
 
