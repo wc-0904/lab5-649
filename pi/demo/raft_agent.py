@@ -89,8 +89,11 @@ def append_encode(term, prev_index, prev_term, commit, count=0, entry_term=0,
 LINK_SILENCE = 0.100
 #: How long a change must hold before it is reported, seconds. Asymmetric for
 #: the same reason as the firmware's: a log entry is permanent, so coming up
-#: late is free while a false entry is not.
-LINK_DOWN_DEBOUNCE = 0.060
+#: late is free while a false entry is not. The down bar sits above the longest
+#: transient seen on the bench, a few hundred milliseconds, not just above the
+#: shortest; a real jumper pull stays down indefinitely so waiting costs
+#: nothing.
+LINK_DOWN_DEBOUNCE = 0.400
 LINK_UP_DEBOUNCE = 0.750
 
 #: How long to wait before resending an unanswered client request, seconds.

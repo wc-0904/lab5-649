@@ -19,7 +19,8 @@ sys.path.insert(0, str(ROOT / "pi" / "demo"))
 from cluster_config import load  # noqa: E402
 from network_state import (COCKPIT_ERROR, COCKPIT_OK, event_link,  # noqa: E402
                            event_node)
-from raft_agent import FOLLOWER, LEADER, RaftAgent, append_encode  # noqa: E402
+from raft_agent import (FOLLOWER, LEADER, LINK_DOWN_DEBOUNCE,  # noqa: E402
+                        LINK_UP_DEBOUNCE, RaftAgent, append_encode)
 
 
 class Harness:
@@ -283,7 +284,8 @@ class CockpitLinkDetectionTests(unittest.TestCase):
         self.assertIsNone(h.agent.poll_links(self.seen(10.0), 10.0))
         # Bus B goes quiet, then holds quiet past the debounce.
         self.assertIsNone(h.agent.poll_links(self.seen(10.5, 1, 10.0), 10.5))
-        event = h.agent.poll_links(self.seen(10.6, 1, 10.0), 10.6)
+        late = 10.5 + LINK_DOWN_DEBOUNCE + 0.01
+        event = h.agent.poll_links(self.seen(late, 1, 10.0), late)
         self.assertEqual(event, event_link(1, 2, False))
 
     def test_a_brief_gap_is_not_reported(self):
@@ -295,29 +297,38 @@ class CockpitLinkDetectionTests(unittest.TestCase):
     def test_recovery_is_reported_after_a_longer_hold(self):
         """Asymmetric: coming up late is free, a false entry is not."""
         h = self.agent()
+        down = 10.5 + LINK_DOWN_DEBOUNCE + 0.01
         h.agent.poll_links(self.seen(10.5, 1, 10.0), 10.5)
-        h.agent.poll_links(self.seen(10.6, 1, 10.0), 10.6)
-        self.assertIsNone(h.agent.poll_links(self.seen(11.0), 11.0))
-        self.assertIsNone(h.agent.poll_links(self.seen(11.5), 11.5))
-        self.assertEqual(h.agent.poll_links(self.seen(11.8), 11.8),
+        h.agent.poll_links(self.seen(down, 1, 10.0), down)
+        # The up debounce is measured from the pass that first saw it healthy,
+        # not from the down report.
+        healthy = down + 0.1
+        self.assertIsNone(h.agent.poll_links(self.seen(healthy), healthy))
+        up = healthy + LINK_UP_DEBOUNCE + 0.01
+        self.assertEqual(h.agent.poll_links(self.seen(up), up),
                          event_link(1, 2, True))
 
     def test_one_change_is_reported_once(self):
         """Checkoff step 4 wants exactly one entry per change."""
         h = self.agent()
+        down = 10.5 + LINK_DOWN_DEBOUNCE + 0.01
         h.agent.poll_links(self.seen(10.5, 1, 10.0), 10.5)
-        self.assertIsNotNone(h.agent.poll_links(self.seen(10.6, 1, 10.0), 10.6))
-        self.assertIsNone(h.agent.poll_links(self.seen(10.7, 1, 10.0), 10.7))
-        self.assertIsNone(h.agent.poll_links(self.seen(11.0, 1, 10.0), 11.0))
+        self.assertIsNotNone(h.agent.poll_links(self.seen(down, 1, 10.0), down))
+        self.assertIsNone(h.agent.poll_links(self.seen(down + 0.1, 1, 10.0),
+                                             down + 0.1))
+        self.assertIsNone(h.agent.poll_links(self.seen(down + 1.0, 1, 10.0),
+                                             down + 1.0))
 
     def test_a_change_waits_when_a_request_is_in_flight(self):
         """A node carries one request at a time; the change must not be lost."""
         h = self.agent()
+        down = 10.5 + LINK_DOWN_DEBOUNCE + 0.01
         h.agent.pending_event = COCKPIT_OK
         h.agent.poll_links(self.seen(10.5, 1, 10.0), 10.5)
-        self.assertIsNone(h.agent.poll_links(self.seen(10.6, 1, 10.0), 10.6))
+        self.assertIsNone(h.agent.poll_links(self.seen(down, 1, 10.0), down))
         h.agent.pending_event = None
-        self.assertEqual(h.agent.poll_links(self.seen(10.7, 1, 10.0), 10.7),
+        self.assertEqual(h.agent.poll_links(self.seen(down + 0.1, 1, 10.0),
+                                            down + 0.1),
                          event_link(1, 2, False))
 
 
