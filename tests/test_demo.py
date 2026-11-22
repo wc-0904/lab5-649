@@ -181,6 +181,7 @@ class ClientBootstrapTests(unittest.TestCase):
         app.remote = None
         app.forwarded = [0, 0]
         app.send_errors = [0, 0]
+        app.last_rx = [float("-inf"), float("-inf")]
         app.can = [Mock(), Mock()]
         app.error = False
         app.cluster = load_cluster_config()
@@ -243,6 +244,7 @@ class StateTests(unittest.TestCase):
         app.remote = None
         app.forwarded = [0, 0]
         app.send_errors = [0, 0]
+        app.last_rx = [float("-inf"), float("-inf")]
         app.can = [Mock(), Mock()]
         app.recovery_press = None
         app.last_fault = float("-inf")
@@ -354,6 +356,7 @@ class StateTests(unittest.TestCase):
         import errno
         app.sequence = {CTRL: 0}
         app.send_errors = [0, 0]
+        app.last_rx = [float("-inf"), float("-inf")]
         app.can[0].send.side_effect = OSError(errno.ENETDOWN, "down")
         self.assertEqual(app.send(CTRL, struct.pack("<hBBBB", 0, 0, 0, 0, 0)), 1)
         app.can[1].send.assert_called_once()

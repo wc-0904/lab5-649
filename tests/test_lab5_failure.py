@@ -228,5 +228,89 @@ class GraphVisibilityTests(unittest.TestCase):
         self.assertNotIn("commit idx=", output)
 
 
+class CockpitLinkDetectionTests(unittest.TestCase):
+    """The cockpit has to detect its own link failures, like any other node.
+
+    D15 gives each node its own links to report. The cockpit had no detector at
+    all: it announced both links up once at startup and never looked again, so
+    pulling it off a bus produced no log entry and the graph stayed wrong. On
+    the bench that showed as links=1212.2, with the drivetrain's pulled link
+    recorded and the cockpit's not.
+    """
+
+    def setUp(self):
+        """Load the real cluster configuration."""
+        self.config = load(ROOT / "config" / "cluster.conf")
+
+    def agent(self):
+        """Build a captured cockpit agent with its startup reports drained.
+
+        :return: Harness.
+        """
+        h = Harness(1, self.config)
+        h.agent.self_events = []
+        return h
+
+    @staticmethod
+    def seen(now, quiet_bus=None, since=0.0):
+        """Build a last-seen pair with one bus optionally stale.
+
+        Bus A has to keep receiving, or it is reported down as well and the
+        test stops saying what it means.
+
+        :param now: Current monotonic time.
+        :param quiet_bus: Bus index that has gone silent, or None.
+        :param since: When that bus was last heard.
+        :return: Last-seen time per bus.
+        """
+        last = [now, now]
+        if quiet_bus is not None:
+            last[quiet_bus] = since
+        return last
+
+    def test_silence_on_a_bus_reports_it_down(self):
+        """Something arrives every 20 ms on a healthy bus."""
+        h = self.agent()
+        self.assertIsNone(h.agent.poll_links(self.seen(10.0), 10.0))
+        # Bus B goes quiet, then holds quiet past the debounce.
+        self.assertIsNone(h.agent.poll_links(self.seen(10.5, 1, 10.0), 10.5))
+        event = h.agent.poll_links(self.seen(10.6, 1, 10.0), 10.6)
+        self.assertEqual(event, event_link(1, 2, False))
+
+    def test_a_brief_gap_is_not_reported(self):
+        """A log entry is permanent, so the threshold sits above the noise."""
+        h = self.agent()
+        self.assertIsNone(h.agent.poll_links([10.0, 9.95], 10.0))
+        self.assertIsNone(h.agent.poll_links([10.01, 10.01], 10.01))
+
+    def test_recovery_is_reported_after_a_longer_hold(self):
+        """Asymmetric: coming up late is free, a false entry is not."""
+        h = self.agent()
+        h.agent.poll_links(self.seen(10.5, 1, 10.0), 10.5)
+        h.agent.poll_links(self.seen(10.6, 1, 10.0), 10.6)
+        self.assertIsNone(h.agent.poll_links(self.seen(11.0), 11.0))
+        self.assertIsNone(h.agent.poll_links(self.seen(11.5), 11.5))
+        self.assertEqual(h.agent.poll_links(self.seen(11.8), 11.8),
+                         event_link(1, 2, True))
+
+    def test_one_change_is_reported_once(self):
+        """Checkoff step 4 wants exactly one entry per change."""
+        h = self.agent()
+        h.agent.poll_links(self.seen(10.5, 1, 10.0), 10.5)
+        self.assertIsNotNone(h.agent.poll_links(self.seen(10.6, 1, 10.0), 10.6))
+        self.assertIsNone(h.agent.poll_links(self.seen(10.7, 1, 10.0), 10.7))
+        self.assertIsNone(h.agent.poll_links(self.seen(11.0, 1, 10.0), 11.0))
+
+    def test_a_change_waits_when_a_request_is_in_flight(self):
+        """A node carries one request at a time; the change must not be lost."""
+        h = self.agent()
+        h.agent.pending_event = COCKPIT_OK
+        h.agent.poll_links(self.seen(10.5, 1, 10.0), 10.5)
+        self.assertIsNone(h.agent.poll_links(self.seen(10.6, 1, 10.0), 10.6))
+        h.agent.pending_event = None
+        self.assertEqual(h.agent.poll_links(self.seen(10.7, 1, 10.0), 10.7),
+                         event_link(1, 2, False))
+
+
 if __name__ == "__main__":
     unittest.main()

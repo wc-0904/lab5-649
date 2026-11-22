@@ -84,6 +84,15 @@ def append_encode(term, prev_index, prev_term, commit, count=0, entry_term=0,
                        commit & APPEND_INDEX_MAX, entry_term & 0xFF, event & 0xFF)
 
 
+#: Receive silence on a bus after which this node calls its own link down,
+#: seconds. Something arrives every 20 ms on a healthy bus.
+LINK_SILENCE = 0.100
+#: How long a change must hold before it is reported, seconds. Asymmetric for
+#: the same reason as the firmware's: a log entry is permanent, so coming up
+#: late is free while a false entry is not.
+LINK_DOWN_DEBOUNCE = 0.060
+LINK_UP_DEBOUNCE = 0.750
+
 #: How long to wait before resending an unanswered client request, seconds.
 #: Must match CLIENT_RETRY_MS in src/raft_agent.c.
 CLIENT_RETRY = 0.200
@@ -342,6 +351,12 @@ class RaftAgent:
         self.next_request = 0
         self.self_events = []
         self.refill_self_reports()
+        # This node's own view of its two links, reported under D15 the same
+        # way each Nucleo reports its own.
+        self.link_down = [False, False]
+        self.link_candidate = [False, False]
+        self.link_changed = [0.0, 0.0]
+        self.link_event = None
         # Cockpit liveness, which only the leader records.
         self.cockpit_known = False
         self.cockpit_alive = False
@@ -767,6 +782,46 @@ class RaftAgent:
         self.self_events = [event_node(self.node_id, True)]
         self.self_events += [event_link(self.node_id, bus, True) for bus in (1, 2)]
 
+    def poll_links(self, last_rx, now):
+        """Report a settled change in this node's own two links.
+
+        D15 gives each node its own links to report, and the cockpit had no
+        detector at all: it announced both links up once at startup and never
+        looked again. So pulling the cockpit off a bus produced no log entry
+        and the graph stayed wrong, while checkoff step 4 lets the TA pick any
+        node, including this one.
+
+        The signal is receive silence. A Nucleo reads its controller's error
+        counters directly; the Pi has no cheap way to do that without forking
+        `ip`, which would block the event loop and cost REF deadlines. But on a
+        healthy bus something arrives every 20 ms, two heartbeats and a
+        reference, so silence is as decisive here and costs nothing.
+
+        The debounce is asymmetric for the same reason it is in the firmware: a
+        log entry is permanent, so coming up late is free while a false entry
+        is not.
+
+        :param last_rx: Monotonic time of the last frame seen on each bus.
+        :param now: Monotonic time from the caller's loop.
+        :return: Encoded event to report, or None.
+        """
+        for bus in (0, 1):
+            down = now - last_rx[bus] >= LINK_SILENCE
+            needed = LINK_DOWN_DEBOUNCE if down else LINK_UP_DEBOUNCE
+            if down != self.link_candidate[bus]:
+                self.link_candidate[bus] = down
+                self.link_changed[bus] = now
+                continue
+            if down == self.link_down[bus] or now - self.link_changed[bus] < needed:
+                continue
+            # A node carries one request at a time, so leave the change
+            # unrecorded until there is room; the next pass will retry.
+            if self.pending_event is not None:
+                continue
+            self.link_down[bus] = down
+            return event_link(self.node_id, bus + 1, not down)
+        return None
+
     def client_tick(self, now):
         """Drive this node's own reports and retry an unanswered one.
 
@@ -787,6 +842,10 @@ class RaftAgent:
                 return
         if self.self_events and self.client_report(self.self_events[0], now):
             self.self_events.pop(0)
+            return
+        if self.link_event is not None:
+            if self.client_report(self.link_event, now):
+                self.link_event = None
 
     def client_report(self, event, now):
         """Record an event, through the leader when that is someone else.

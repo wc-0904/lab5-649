@@ -151,6 +151,9 @@ class Cockpit:
         self.samples = []
         self.sample_overflow = 0
         self.send_errors = [0, 0]
+        # Last frame seen on each bus, which is how this node detects its own
+        # link failures: on a healthy bus something arrives every 20 ms.
+        self.last_rx = [float("-inf"), float("-inf")]
         self.bad_frames = 0
         self.inject = args.inject_invalid
         self.forwarded = [0, 0]
@@ -343,6 +346,7 @@ class Cockpit:
     def receive(self, bus, now):
         """Record per-bus reachability, suppress copies, and bridge foreign traffic."""
         raw = self.can[bus].recv(16)
+        self.last_rx[bus] = now
         if len(raw) != 16:
             self.bad_frames += 1
             return
@@ -487,6 +491,9 @@ class Cockpit:
                 self.blink_tx(now)
                 if self.agent.election_tick(now):
                     self.show_raft_state()
+                event = self.agent.poll_links(self.last_rx, now)
+                if event is not None:
+                    self.agent.link_event = event
                 self.agent.client_tick(now)
                 # This node is the cockpit, so while it leads the answer is
                 # always yes; the other direction is recorded by whoever
