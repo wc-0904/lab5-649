@@ -893,6 +893,22 @@ void raft_on_append(const uint8_t data[8])
 
 	k_spinlock_key_t key = k_spin_lock(&state_lock);
 
+	/*
+	 * A leader must ignore an append at or below its own term. Both buses
+	 * carry every frame and a relay hop returns a leader's own append on
+	 * its other bus, so this runs constantly. Applying it means a leader
+	 * running the consistency check against its own log: once nextIndex has
+	 * walked down to 1 the append carries the leader's own first entry
+	 * stamped with the current term, which does not match the older term
+	 * actually stored there, so the leader truncates its own log to empty
+	 * and re-appends that one entry. Every follower then re-stores index 1
+	 * for ever. A *higher* term is a different matter and falls through,
+	 * since standing down is the whole point of that case.
+	 */
+	if (state.role == RAFT_LEADER && header.term <= state.term) {
+		k_spin_unlock(&state_lock, key);
+		return;
+	}
 	/* A newer term means a new leader; adopt it and follow. */
 	if (header.term > state.term) {
 		adopt_term(header.term);
