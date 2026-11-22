@@ -273,7 +273,22 @@ static void dispatch_task(void *a, void *b, void *c)
 		uint32_t start = begin(DISPATCH);
 		lab_io_toggle(rx.bus == 0 ? LAB_RX_A : LAB_RX_B);
 
-		uint32_t id = lab5_origin_id(rx.frame.id);
+		/*
+		 * Strip the relay flag and relayer only when it is actually
+		 * set. The relay node field shares bits 8 and 9 with the Lab 3
+		 * catalog's own numbering: HB1/HB2/HB3 (0x100..0x102) and FORCE
+		 * (0x300) use exactly those bits to mean something else.
+		 * Stripping them unconditionally from every received identifier
+		 * silently collapsed HB1, BLINK and FORCE onto the same value,
+		 * 0x0, which made every heartbeat and FORCE frame invisible to
+		 * dispatch: peer freshness never updated, DEG latched solid, and
+		 * every node sat in the error state while the consensus layer
+		 * kept reporting a complete, healthy graph. Lab 3 traffic never
+		 * carries the relay flag, bit 10, so gating on it leaves catalog
+		 * identifiers untouched.
+		 */
+		uint32_t id = lab5_is_relayed(rx.frame.id) ?
+			lab5_origin_id(rx.frame.id) : rx.frame.id;
 		/*
 		 * Lab 5 traffic is not Lab 3 catalog traffic: lab_valid() would
 		 * reject it and inflate the malformed counter. REF goes to the

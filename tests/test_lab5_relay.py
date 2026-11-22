@@ -171,6 +171,65 @@ class FirmwareAgreementTests(unittest.TestCase):
                 self.assertEqual(bool(flagged), is_relayed(can_id))
 
 
+class DispatchGateSafetyTests(unittest.TestCase):
+    """The bug found on the bench: stripping relay bits unconditionally.
+
+    `src/lab_tasks.c` once computed `id = lab5_origin_id(rx.frame.id)` for
+    every received frame, Lab 3 catalog traffic included. The relay node field
+    shares bits 8 and 9 with the catalog's own numbering: HB1/HB2/HB3
+    (0x100..0x102) and FORCE (0x300) use exactly those bits to mean something
+    else. Stripping them unconditionally collapsed HB1, BLINK and FORCE onto
+    the same identifier, 0x0, which made every heartbeat and FORCE frame
+    invisible to dispatch: peer freshness never updated, DEG latched solid,
+    and every node sat in the error state while the consensus layer kept
+    reporting a complete, healthy graph.
+
+    The fix gates the strip on `lab5_is_relayed()`. This class pins the
+    invariant that makes that gate safe: no Lab 3 catalog identifier ever
+    satisfies `is_relayed()`, so gating on it can never misfire on catalog
+    traffic, whatever the Lab 5 side later chooses to encode in those bits.
+    """
+
+    #: Every identifier Lab 3's catalog actually puts on the wire.
+    LAB3_CATALOG_IDS = (0x010, 0x020, 0x100, 0x101, 0x102, 0x200, 0x300)
+
+    def test_no_catalog_identifier_is_ever_seen_as_relayed(self):
+        """The exact precondition the dispatch gate depends on."""
+        for can_id in self.LAB3_CATALOG_IDS:
+            with self.subTest(can_id=hex(can_id)):
+                self.assertFalse(is_relayed(can_id))
+
+    def test_unconditional_stripping_would_corrupt_the_catalog(self):
+        """Reproduces the bug directly, so a regression is caught even if
+        someone reintroduces the unconditional call rather than the gated one.
+        """
+        corrupted = {can_id: origin_id(can_id) for can_id in self.LAB3_CATALOG_IDS}
+        # HB1, BLINK and FORCE collapsed onto the same wrong value on the bench.
+        collapsed = [can_id for can_id, stripped in corrupted.items()
+                    if stripped != can_id]
+        self.assertIn(0x100, collapsed)  # HB1
+        self.assertIn(0x200, collapsed)  # BLINK
+        self.assertIn(0x300, collapsed)  # FORCE
+        self.assertEqual(len({corrupted[0x100], corrupted[0x200],
+                              corrupted[0x300]}), 1)
+
+    def test_the_gated_strip_preserves_every_catalog_identifier(self):
+        """What the dispatch code must do instead: strip only when relayed."""
+        for can_id in self.LAB3_CATALOG_IDS:
+            gated = origin_id(can_id) if is_relayed(can_id) else can_id
+            with self.subTest(can_id=hex(can_id)):
+                self.assertEqual(gated, can_id)
+
+    def test_the_gated_strip_still_recovers_a_relayed_lab5_identifier(self):
+        """The gate must not break the thing it exists to let through."""
+        for can_id in LAB5_IDS:
+            for node in RELAYERS:
+                relayed = relay_id(can_id, node)
+                gated = origin_id(relayed) if is_relayed(relayed) else relayed
+                with self.subTest(can_id=hex(can_id), node=node):
+                    self.assertEqual(gated, can_id)
+
+
 class RelayGateTests(unittest.TestCase):
     """Relaying only when something actually needs it.
 

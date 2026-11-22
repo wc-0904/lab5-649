@@ -1250,6 +1250,29 @@ matching on the flag alone covers every relayer.
 carries the flag. With three nodes one hop always suffices, so nothing is lost,
 and no loop is possible regardless of topology.
 
+**A second, worse bug was hiding behind the first.** Gating the relay cost
+nothing to test because the dispatcher never applied the gated strip
+correctly: `src/lab_tasks.c` computed `id = lab5_origin_id(rx.frame.id)` for
+**every** received frame, Lab 3 catalog traffic included. The relay node field
+occupies bits 8 and 9 of the identifier, which are exactly the bits HB1/HB2/HB3
+(0x100..0x102) and FORCE (0x300) use for their own numbering. Stripping them
+unconditionally collapsed HB1, BLINK and FORCE onto the identical wrong value,
+`0x0`, on every single frame. Heartbeat and FORCE dispatch then silently
+matched nothing: peer freshness never updated, DEG latched solid on both
+buses, and every node sat in the error state flashing all four hazard lamps
+while the consensus layer kept reporting `mode=OK` and a complete `CSD
+links=121212` graph. Consensus was perfect and the vehicle was dead, and the
+two layers disagreeing that sharply was the tell.
+
+The fix gates the strip on `lab5_is_relayed()`: `id = lab5_is_relayed(id) ?
+lab5_origin_id(id) : id`. Lab 3 traffic never carries the relay flag (bit 10),
+so the gate leaves it untouched. Four tests in `tests/test_lab5_relay.py`
+reproduce the corruption directly and pin that no Lab 3 catalog identifier can
+ever satisfy `is_relayed()`, which is the invariant the gate depends on. The
+Pi side never had this bug: `cockpit.py` only used the stripped identifier to
+test for Lab 5 traffic and fell through to the untouched original for every
+Lab 3 catalog path.
+
 **D25 revised after the bench: a reflex, but only while something needs it.**
 Relaying every frame unconditionally saturated the buses. Each Lab 5 frame
 generated relayed copies that shared the same transmit queues as Lab 3's
