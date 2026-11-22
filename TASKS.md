@@ -771,7 +771,7 @@ an edge, and edges are exactly a half period apart with no accumulation.
 | 8.2 | Hazard rates, 2 Hz normal and 4 Hz in failure mode | `lab_tasks.c` | Both rates in step across nodes |
 | 8.3 | Left, right, cancel from the wheel | `lab_tasks.c`, `cockpit.py` | Checkoff step 3 passes end to end |
 
-### P9. Election and time master handover, checkoff steps 6 and 8  [WRITTEN on the STM32, Pi side and bench pending]
+### P9. Election and time master handover, checkoff steps 6 and 8  [DONE, verified on hardware 2026-11-22]
 
 **D14 settled: a seeded generator, not hardware entropy.** Checkoff step 8 asks
 for "the seed that makes the Pi win", so the draw has to be a function of
@@ -1057,6 +1057,29 @@ owner reports its own links, so the owner reports its own node.
 
 Nine tests cover it, including the redirect, the retry, a reply addressed to
 another node, and the requeue on stepping down.
+
+**Verified on hardware 2026-11-22.** All three nodes converge on the same index
+with the same graph:
+
+```
+raft: commit idx=12 net nodes=CSD links=121212 mode=OK
+```
+
+identical on the Pi, N2 and N3 at term 65. That is checkoff step 4's
+requirement, every node and link present at the same index on every console.
+The full client write path is visible on both Nucleos, `client req=2
+CANLINK_steering_1_UP`, `client ack req=2 idx=11`, then `store idx=11 term=65`
+on the peer, including the redirect when a client reaches a follower.
+
+A restarted cockpit prints `stepping down` exactly once and settles as a
+follower, which is checkoff step 7's leadership requirement.
+
+**Bench note for the demo.** A node that has just joined shows a large first
+drift ratio, 2273 ppm in this run, decaying geometrically to normal over about
+ten seconds as the quarter weight average washes out the one sample taken
+across the sync acquisition itself. Its PPS edge is off by milliseconds during
+that window. Let a freshly started node settle for fifteen seconds before
+scoping anything.
 
 Still to do in P10: the held events and replay-exactly-once behaviour of
 checkoff step 7, and `COCKPIT_OK`/`COCKPIT_ERROR`.
