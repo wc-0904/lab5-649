@@ -1005,6 +1005,49 @@ node routinely hears itself, once per bus plus relayed copies, so every handler
 needs an explicit answer for that case, and two implementations of one protocol
 need the rule written twice or tested once against each other.
 
+**Election and step-down verified on the bench, 2026-11-22.** Over repeated
+kill and restart cycles with all three nodes fresh: terms went 53, 54, 55 and
+stopped. One failed round then success, which is ordinary Raft rather than a
+runaway. The new refusal diagnostic earned itself immediately:
+
+```
+raft: vote refused for drivetrain term=54 mine=54 log-behind
+raft: standing term=55 last=3/53
+raft: LEADER term=55 with 2 of 3 votes
+```
+
+N3 stood with `last=1/52`, N2 held `last=3/53` and refused it for being behind,
+then stood itself and won. That is Raft 5.4.1 doing exactly its job, observed.
+The cockpit steps down on restart every time and the leadership stays with the
+STM32, which is checkoff step 7's requirement.
+
+**Open, and the next thing to fix: the committed graph stays empty under an
+STM32 leader.** Entries replicate correctly, `store idx=3 term=55
+CANLINK_steering_1_UP` and so on, but every commit line reads
+`net nodes=... links=......`. Two facts explain it:
+
+- `network_link_up()` requires `network_node_up()` for the same node, which is
+  right: a link belonging to a node that is not up is meaningless, and
+  `dropNode` is specified to remove the node and all its links.
+- `src/raft_agent.c` contains no call to `raft_event_node()` at all. The STM32
+  client reports only its own two links. Node-up entries came solely from the
+  cockpit appending them directly while it was leader.
+
+So once an STM32 leads, nothing puts `NODE_*_UP` into the log, no node is marked
+up, and every link is suppressed even though it committed. The entries are
+right and the rendering is right; the input is missing.
+
+The fix has two halves, and the first follows D15's own logic. Owner reports own
+links, so owner should report own node:
+
+- **Each node reports `NODE_<self>_UP` for itself**, queued ahead of its link
+  reports in `raft_client_poll()`. Symmetric with the link path and needs no new
+  mechanism.
+- **The cockpit needs a client path that transmits**, rather than appending
+  directly. `client_append()` only works while it leads, so as a follower its own
+  `NODE_cockpit_UP` never reaches the log. The STM32's `send_client_request()` is
+  the shape to mirror.
+
 Still to do in P10: the held events and replay-exactly-once behaviour of
 checkoff step 7, and `COCKPIT_OK`/`COCKPIT_ERROR`.
 
