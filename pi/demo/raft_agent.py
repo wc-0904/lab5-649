@@ -12,7 +12,7 @@ from protocol import (APPEND, APPEND_ACK_BASE, CLIENT_REQ_BASE,
                       lab5_id_for)
 from network_state import (APPEND_ACCEPTED, Network, RaftLog,
                            event_link, event_name, event_node)
-from time_sync import TimeSync, local_cycles as local_cycles_now
+from time_sync import TimeSync, delay_for, local_cycles as local_cycles_now
 
 #: Roles a node can hold.
 FOLLOWER, CANDIDATE, LEADER = "FOLLOWER", "CANDIDATE", "LEADER"
@@ -281,6 +281,9 @@ class RaftAgent:
         if self.is_leader():
             return False
         master_us, cycle = ref_decode(data)
+        # The delay belongs to the master's transmit path, so it follows the
+        # master rather than being fixed for the cluster.
+        self.sync.delay_us = delay_for(self.leader)
         self.sync.on_ref(master_us, local_cycles if local_cycles is not None
                          else local_cycles_now())
         self.cycle = cycle

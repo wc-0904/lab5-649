@@ -23,6 +23,21 @@
 #define TIME_SYNC_RATIO_SHIFT 16
 /** @brief A ratio of exactly one, meaning the local clock matches the master. */
 #define TIME_SYNC_RATIO_ONE (1 << TIME_SYNC_RATIO_SHIFT)
+/** @brief Declare the one way delay for the current master.
+ *
+ * The delay is dominated by the master's transmit path rather than by the bus,
+ * so it is a property of whoever is leading and has to be reset when the leader
+ * changes. Measured on the bench: about 658 microseconds with the Pi as master,
+ * most of which is Python, the socket, the SocketCAN queue, the mcp251x
+ * workqueue and a 4 MHz SPI transaction sitting between the timestamp and the
+ * first bit on the wire. An STM32 master has none of that.
+ * @param us Delay in microseconds.
+ */
+void time_sync_set_delay_us(uint32_t us);
+/** @brief Read the one way delay in force.
+ * @return Delay in microseconds.
+ */
+uint32_t time_sync_delay_us(void);
 /** @brief Declare the rate of the counter this module is given.
  *
  * Defaults to one microsecond per tick, which is what pps.c provides. The host

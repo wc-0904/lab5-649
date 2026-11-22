@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "pi" / "demo"))
 
 from raft_agent import RaftAgent, ref_encode
 from cluster_config import load as load_cluster_config
-from time_sync import DELAY_US, RATIO_ONE, RATIO_WINDOW_US, TimeSync
+from time_sync import DELAY_COCKPIT_US as DELAY_US, RATIO_ONE, RATIO_WINDOW_US, TimeSync
 
 #: Tick rate the harness drives the module at. Deliberately not the 1 MHz the
 #: firmware uses, so that a hard coded rate in time_sync.c would fail here.

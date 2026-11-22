@@ -264,6 +264,13 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us, uint32_t local_cycles
 		lab_io_set(LAB_SYNC, true);
 		set_system_clock(ref.master_us);
 	}
+	/*
+	 * The delay belongs to the master's transmit path, so it has to follow
+	 * the master. Setting it on every reference rather than only on a
+	 * change costs one store and cannot be forgotten at a handover.
+	 */
+	time_sync_set_delay_us(raft_leader() == LAB_NODE_COCKPIT ?
+			       LAB5_DELAY_COCKPIT_US : LAB5_DELAY_STM32_US);
 	if (!LAB5_CFG_DEBUG) {
 		return;
 	}

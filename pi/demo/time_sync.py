@@ -22,9 +22,24 @@ RATIO_WINDOW_MAX_US = 10000000
 AVERAGE_SHIFT = 2
 #: Ratios further from one than this are rejected as noise.
 RATIO_TOLERANCE = RATIO_ONE // 100
-#: One way delay from the leader stamping L to the receiver capturing F, in
-#: microseconds. Must match DELAY_US in src/time_sync.c.
-DELAY_US = 300
+#: One way delay from the master stamping L to a node capturing F, indexed by
+#: the master's node ID. The delay belongs to the master's transmit path and
+#: not to the bus, so it changes when the leader changes; holding one value
+#: across an election would step every follower's clock at the handover. Must
+#: match enum lab5_delay in include/lab_protocol.h.
+DELAY_COCKPIT_US = 658
+DELAY_STM32_US = 400
+#: Used until a master is known.
+DELAY_US = DELAY_COCKPIT_US
+
+
+def delay_for(node_id):
+    """Pick the one way delay for a given master.
+
+    :param node_id: Numeric ID of the node currently leading.
+    :return: Delay in microseconds.
+    """
+    return DELAY_COCKPIT_US if node_id == 1 else DELAY_STM32_US
 #: The cycle counter is 32 bits on the STM32, so the mirror wraps the same way.
 CYCLE_MODULO = 1 << 32
 #: Backward master jump beyond which a new master has taken over, microseconds.

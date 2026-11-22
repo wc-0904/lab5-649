@@ -14,25 +14,22 @@
  */
 static uint32_t tick_hz = 1000000U;
 
-/** @brief One way delay from the leader stamping L to this node capturing F.
+/** @brief Default one way delay, used until the master is known, microseconds.
  *
- * Estimated from CAN bus properties rather than a round trip, the way TTCAN
- * does it, because Part 6 forbids an NTP style request and response. A REF is a
- * standard frame with eight data bytes: 1 start, 11 identifier, 1 RTR, 6
- * control, 64 data, 15 CRC, 3 delimiters and acknowledge, 7 end of frame, which
- * is 108 bits before stuffing and about 128 after. At 500 kbit/s that is 256
- * microseconds on the wire. Reading the frame out of the MCP2515 costs a
- * thirteen byte SPI transaction at the 2.625 MHz the STM32 actually clocks,
- * about 40 microseconds, plus interrupt latency.
+ * The delay from the leader stamping L to this node capturing F. Estimated
+ * without a round trip, the way TTCAN does it, because Part 6 forbids an NTP
+ * style request and response.
  *
- * The residual is what this constant cannot capture: the leader stamps L in
- * software before queueing, so a frame already in progress can delay REF by up
- * to one maximum frame time. REF holds the lowest identifier in the catalog and
- * so wins arbitration against everything else, which bounds that wait rather
- * than eliminating it. P7 measures the resulting spread on a scope; this
- * constant is the starting point, not the answer.
+ * It is deliberately not a constant. Measured on the bench, this delay is
+ * dominated by the *master's transmit path*, not by the bus, so it changes when
+ * the leader changes. Holding one value across an election would step every
+ * follower's clock by the difference at the handover, and checkoff step 6
+ * allows no step larger than 100 microseconds. See time_sync_set_delay_us().
  */
-#define DELAY_US 300
+#define DELAY_DEFAULT_US 658
+
+/** @brief Current one way delay estimate, microseconds. */
+static uint32_t delay_us = DELAY_DEFAULT_US;
 
 /** @brief Shortest span a ratio may be measured over, microseconds.
  *
@@ -109,6 +106,32 @@ static struct k_spinlock lock;
 uint64_t time_sync_cycles_to_us(uint32_t cycles)
 {
 	return (uint64_t)cycles * 1000000U / tick_hz;
+}
+
+/** @brief Declare the one way delay for the current master.
+ *
+ * Changing this moves the global timeline by the difference, so it is only
+ * called when the master changes, never periodically.
+ * @param us Delay in microseconds.
+ */
+void time_sync_set_delay_us(uint32_t us)
+{
+	k_spinlock_key_t key = k_spin_lock(&lock);
+
+	delay_us = us;
+	k_spin_unlock(&lock, key);
+}
+
+/** @brief Read the one way delay in force.
+ * @return Delay in microseconds.
+ */
+uint32_t time_sync_delay_us(void)
+{
+	k_spinlock_key_t key = k_spin_lock(&lock);
+	uint32_t us = delay_us;
+
+	k_spin_unlock(&lock, key);
+	return us;
 }
 
 /** @brief Declare the rate of the counter this module is given.
@@ -217,7 +240,7 @@ void time_sync_on_ref(uint64_t master_us, uint32_t local_cycles)
 		state.anchor_master_us = master_us;
 		state.anchor_cycles = local_cycles;
 	}
-	state.base_us = master_us + DELAY_US;
+	state.base_us = master_us + delay_us;
 	state.last_master_us = master_us;
 	state.last_cycles = local_cycles;
 	state.have_last = true;

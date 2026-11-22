@@ -62,6 +62,26 @@ struct lab5_append { uint8_t term; uint16_t prev_index; uint8_t prev_term;
  * The 48 bit field spans about 8.9 years from here, so it covers the course and
  * then some. Both endpoints must use this same constant.
  */
+/** @brief One way delay from the master stamping L to a node capturing F.
+ *
+ * Indexed by the master's node ID, because this delay belongs to the master's
+ * transmit path and not to the bus. Measured on the bench with the Pi leading:
+ * differencing the scope gap between the Pi's PPS edge and a Nucleo's against
+ * the Pi's own self reported scheduling lateness gives about 658 microseconds,
+ * of which only 256 is time on the wire. The rest is Python, the socket, the
+ * SocketCAN queue, the mcp251x workqueue and a 4 MHz SPI transaction standing
+ * between the timestamp and the first bit transmitted.
+ *
+ * The STM32 figure is not measured yet and is a calculation: 256 microseconds
+ * on the wire, a transmit worker handoff, and two SPI transactions. P9 measures
+ * it the same way, and more easily, since a master applies no delay to its own
+ * edge, so the gap to a follower is the error directly.
+ */
+enum lab5_delay {
+	LAB5_DELAY_COCKPIT_US = 658,
+	LAB5_DELAY_STM32_US = 400,
+};
+
 #define LAB5_EPOCH_US 1767225600000000ULL
 /** @brief Decoded AppendEntries acknowledgement.
  *

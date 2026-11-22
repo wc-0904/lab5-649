@@ -573,13 +573,39 @@ matters, so D17 is closed at the receive callback.
 
 Three things to state carefully in the report:
 
-- **`DELAY_US` was not validated and cannot be by this measurement.** An error in
+**D18 resolved by measurement, 2026-11-21.** Scoping the Pi's PPS against N2
+gave a **mean of 272.4 us with the Pi rising first**, standard deviation 105.5 us
+over ten edges, while the Pi's own thread self reported **+85.7 us mean lateness**
+(worst +304, SCHED_FIFO granted) over 300 edges. Differencing:
+
+```
+Pi edge = T + 85.7
+N2 edge = T + 85.7 + 272.4 = T + 358.1
+```
+
+A node fires at `T - d + D`, so late by 358 means `D = d + 358 = 658 us`. Only
+256 us of that is time on the wire. The rest is the Pi's transmit path: Python,
+the socket, the SocketCAN queue, the mcp251x workqueue and a 4 MHz SPI
+transaction standing between the timestamp and the first bit transmitted.
+
+**The consequence is larger than the constant.** The delay belongs to the
+master's transmit path, not to the bus, so it changes when the leader changes.
+An STM32 master has none of that software stack. Holding 658 across an election
+would step every follower's clock by the difference at the handover, and
+checkoff step 6 allows no step larger than 100 us. `enum lab5_delay` now carries
+one value per master and `raft_on_ref()` selects it from the current leader.
+`LAB5_DELAY_STM32_US` is a calculation at 400 and **is not measured yet**: P9
+measures it the same way and more easily, since a master applies no delay to its
+own edge, so the gap from master to follower is the error directly.
+
+- **The N2 to N3 measurement could not have found this.** An error in
   `d` common to both nodes shifts both edges equally and cancels exactly in a node
   to node comparison. What the 9.14 us mean bounds is the *asymmetry* between the
-  two boards. It is also not statistically distinguishable from zero: the standard
-  error of the mean over ten samples is 19.48/sqrt(10) = 6.16 us, so 9.14 is 1.5
-  sigma. The constant stays at 300 and is left as a calculation, not a measurement.
-  Absolute accuracy would need an external time reference the bench does not have.
+  two boards, and that is not statistically distinguishable from zero either: the
+  standard error of the mean over ten samples is 19.48/sqrt(10) = 6.16 us, so 9.14
+  is 1.5 sigma. Breaking the symmetry needed a third edge from a node that applies
+  no delay to itself and can report its own scheduling error, which is what the
+  Pi's PPS thread provides.
 - **The jitter came in better than P6 predicted**, 19.5 us against about 50. The
   difference is the common mode component: a REF the Pi stamps and then delivers
   late moves both nodes' edges together, so it largely cancels in the difference.
