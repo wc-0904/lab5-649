@@ -23,6 +23,7 @@ from cluster_config import load  # noqa: E402
 from network_state import event_node  # noqa: E402
 from protocol import REQ_VOTE_BASE, VOTE_BASE, lab5_id_for  # noqa: E402
 from raft_agent import (CANDIDATE, FOLLOWER, LEADER, RaftAgent,  # noqa: E402
+                        append_encode,
                         vote_decode, vote_encode, vote_request_decode,
                         vote_request_encode)
 
@@ -331,6 +332,88 @@ class ElectionStateTests(unittest.TestCase):
         self.assertEqual(set(h.agent.match_index.values()), {0})
         self.assertEqual(set(h.agent.next_index.values()),
                          {h.agent.log.last_index() + 1})
+
+
+class StepDownTests(unittest.TestCase):
+    """The cockpit must give up the leadership when a newer term appears.
+
+    Without this the Pi boots believing it leads, because default_leader names
+    it, and nothing else carries a term it has to respect: REF has no term
+    field and a vote only arrives during an election it took part in. A cockpit
+    restarted after an election kept transmitting REF alongside the real leader
+    and dragged every follower between two timelines, which is what the bench
+    showed as endless `append rejected result=1` and `time master restarted`.
+    """
+
+    def setUp(self):
+        """Load the real cluster configuration."""
+        self.config = load(ROOT / "config" / "cluster.conf")
+
+    def agent(self, node_id=1):
+        """Build a captured agent.
+
+        :param node_id: Numeric ID, defaulting to the cockpit.
+        :return: Harness.
+        """
+        return Harness(node_id, self.config)
+
+    def test_the_cockpit_boots_as_leader(self):
+        """The precondition for the bug: it leads without being elected."""
+        h = self.agent()
+        self.assertEqual(h.agent.role, LEADER)
+        self.assertEqual(h.agent.term, 1)
+
+    def test_a_higher_term_makes_the_cockpit_step_down(self):
+        """Exactly checkoff step 7: it rejoins as a follower."""
+        h = self.agent()
+        ack = h.agent.on_append(append_encode(9, 0, 0, 0))
+        self.assertIsNotNone(ack)
+        self.assertEqual(h.agent.role, FOLLOWER)
+        self.assertEqual(h.agent.term, 9)
+        self.assertFalse(h.agent.is_leader())
+
+    def test_a_leader_ignores_its_own_append(self):
+        """Both buses carry it and a relay can return it; applying it would mean
+        running the consistency check against its own log, which can truncate
+        entries still being replicated.
+        """
+        h = self.agent()
+        h.agent.log.append(1, event_node(2, True))
+        before = h.agent.log.last_index()
+        self.assertIsNone(h.agent.on_append(append_encode(1, 0, 0, 0)))
+        self.assertEqual(h.agent.log.last_index(), before)
+
+    def test_a_stale_append_is_rejected_rather_than_applied(self):
+        """A restarted old leader must not rewrite a follower's log."""
+        h = self.agent(2)
+        h.agent.term = 5
+        h.agent.on_append(append_encode(1, 0, 0, 0))
+        self.assertEqual(h.agent.term, 5)
+
+    def test_a_stepped_down_cockpit_stops_transmitting(self):
+        """The actual failure: two masters on the bus at once."""
+        h = self.agent()
+        h.agent.on_append(append_encode(9, 0, 0, 0))
+        h.sent.clear()
+        h.agent.ref_tx(h.agent.last_contact + 1.0)
+        h.agent.append_tx(h.agent.last_contact + 1.0)
+        self.assertEqual(h.sent, [])
+
+    def test_contact_from_a_leader_holds_off_an_election(self):
+        """An append is contact, so a quiet follower does not challenge it."""
+        h = self.agent(2)
+        h.agent.last_contact = 0.0
+        h.agent.on_append(append_encode(9, 0, 0, 0))
+        self.assertGreater(h.agent.last_contact, 0.0)
+
+    def test_a_candidate_concedes_to_a_leader_in_its_own_term(self):
+        """Someone else won this round; standing on would raise the term for nothing."""
+        h = self.agent(2)
+        h.agent.election_tick(h.agent.last_contact + 1.0)
+        self.assertEqual(h.agent.role, CANDIDATE)
+        h.agent.on_append(append_encode(h.agent.term, 0, 0, 0))
+        self.assertEqual(h.agent.role, FOLLOWER)
+        self.assertEqual(h.agent.votes, set())
 
 
 if __name__ == "__main__":

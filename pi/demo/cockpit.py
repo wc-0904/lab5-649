@@ -179,6 +179,18 @@ class Cockpit:
         :param now: Monotonic time from the caller's loop.
         :param now_cycles: Local microsecond counter captured at the socket read.
         """
+        if can_id == APPEND:
+            # Only a follower applies these. A leader hearing its own append
+            # back on the other bus must ignore it, and a leader that is no
+            # longer current learns so here: this is the only frame carrying a
+            # term it has to respect.
+            before = self.agent.is_leader()
+            ack = self.agent.on_append(data)
+            if ack is not None:
+                self.send_lab5(*ack)
+            if before != self.agent.is_leader():
+                self.show_raft_state()
+            return
         if can_id == REF:
             # A leader hears its own REF back on the other bus; on_ref ignores
             # that. While following, this is what puts the Pi on the shared

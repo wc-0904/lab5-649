@@ -32,6 +32,16 @@ APPEND_MISSING = "MISSING"
 APPEND_MISMATCH = "MISMATCH"
 APPEND_FORGOTTEN = "FORGOTTEN"
 
+#: Wire codes for those outcomes, in the order enum raft_append_result declares
+#: them. The acknowledgement carries the number, not the name.
+APPEND_RESULT_CODES = {
+    APPEND_ACCEPTED: 0,
+    APPEND_STALE_TERM: 1,
+    APPEND_MISSING: 2,
+    APPEND_MISMATCH: 3,
+    APPEND_FORGOTTEN: 4,
+}
+
 #: Node names in configured order, for event names and printing.
 NODE_NAMES = ("cockpit", "steering", "drivetrain")
 

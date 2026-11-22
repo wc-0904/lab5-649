@@ -872,12 +872,51 @@ One encouraging sign: had the delay stayed at the Pi's 658 microseconds, the ste
 would have been about 260 in a consistent direction. Nothing that large appeared,
 so the per master delay is doing its job and 400 is in the right neighbourhood.
 
-Still to do: the handover step measurement above, and the Pi rejoining as a
-follower, which belongs to P10. **The Pi currently cannot step down**: it has
-`on_ref` and can vote, but no `on_append`, so nothing makes it adopt a higher
-term, and restarting the cockpit after an election produces two nodes both
-believing they lead and both transmitting REF. That is checkoff step 7 and is
-the first thing P10 has to fix.
+**Handover step measured, 2026-11-22: it passes.** On N2, across the handover to
+N3, with the local mean at about 999970 microseconds:
+
+| Interval | Delta | Versus local mean |
+|---|---|---|
+| across the handover | 999976 | +6 us |
+| the one after | 999886 | -84 us |
+
+Both inside the 100 microsecond bound checkoff step 6 sets, though the step is
+not separable from the scatter around it, so the honest claim is that both are
+under 100 rather than that the step is 6.
+
+**The limiting term has moved to the STM32 master's REF transmit jitter.** With
+the Pi leading the ratio sat within one LSB, 15 ppm. With N3 leading it bounces
+30, -46, +45 ppm. `raft_ref_tx()` stamps the clock inside `tx_task`, a thread
+woken on a 20 ms deadline, so that thread's wakeup jitter lands directly on L;
+about 100 microseconds over a one second ratio window reads as 100 ppm. If more
+margin is ever wanted, stamping closer to the actual transmission is the lever,
+but the bound is met.
+
+**A dying master's last REF poisons the ratio the new leader freezes.** On the
+run above, N3's ratio went 0 to -46 ppm exactly at the handover and stayed
+there, which is impossible from references since a leader receives none. The
+sample came from the Pi's final REF, delivered late and stretching the
+measurement window; 46 microseconds of error across a one second window is 46
+ppm. The new leader then froze it and free-runs on it, visible as a steady
+1000046 microsecond edge spacing. Harmless, since 46 ppm is within crystal
+spec, but worth a line in the report: the last message from a dying master is
+the least trustworthy one. A cheap mitigation is to discard the ratio sample
+taken across an interval in which the master went silent.
+
+**The cockpit can now step down.** `RaftAgent.on_append()` applies an
+AppendEntries, adopts a higher term, replays the state machine through the new
+commit index and acknowledges. Before it, the Pi had `on_ref` and could vote but
+nothing carried a term it had to respect, since REF has no term field and a vote
+only arrives during an election it took part in. A cockpit restarted after an
+election therefore kept transmitting REF beside the real leader and dragged
+every follower between two timelines, which the bench showed as endless
+`append rejected result=1` and `time master restarted`. A leader also ignores an
+append at or below its own term, because both buses carry it and a relay can
+return it, and applying it would mean running the consistency check against its
+own log and truncating entries it is still replicating.
+
+Still to do in P10: the held events and replay-exactly-once behaviour of
+checkoff step 7, and `COCKPIT_OK`/`COCKPIT_ERROR`.
 
 | # | Task | Where | Done when |
 |---|---|---|---|

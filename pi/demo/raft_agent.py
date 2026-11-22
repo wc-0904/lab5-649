@@ -11,7 +11,8 @@ from protocol import (APPEND, APPEND_ACK_BASE, CLIENT_REQ_BASE,
                       CLIENT_REDIRECT as LAB5_CLIENT_REDIRECT, REF,
                       REQ_VOTE_BASE, VOTE_BASE, lab5_id_for)
 from election import Election
-from network_state import (APPEND_ACCEPTED, Network, RaftLog,
+from network_state import (APPEND_ACCEPTED, APPEND_RESULT_CODES, Network,
+                           RaftLog,
                            event_link, event_name, event_node)
 from time_sync import TimeSync, delay_for, local_cycles as local_cycles_now
 
@@ -445,6 +446,54 @@ class RaftAgent:
             print("raft: LEADER term=%d with %d of %d votes"
                   % (self.term, len(self.votes), self.config["N"]), flush=True)
         return True
+
+    def on_append(self, data):
+        """Apply an AppendEntries from a leader and acknowledge it.
+
+        Without this the Pi cannot step down. It boots believing it leads,
+        because default_leader names it, and nothing else carries a term it
+        would have to respect: REF has no term field and a vote only arrives
+        during an election it took part in. A cockpit restarted after an
+        election therefore kept transmitting REF alongside the real leader and
+        dragged every follower between two timelines. That is checkoff step 7,
+        "Pi back, rejoins as a follower, LEADER stays on the STM32".
+
+        :param data: Eight received bytes.
+        :return: (can_id, payload) to transmit, or None when ignored.
+        """
+        header = append_decode(data)
+        stepped_down = False
+        if self.is_leader() and header["term"] <= self.term:
+            # Our own append, heard back on the other bus or relayed. Applying
+            # it would mean a leader running its own consistency check against
+            # its own log, which can truncate entries it is still replicating.
+            # A *higher* term is a different matter and falls through.
+            return None
+        if header["term"] > self.term:
+            was_leader = self.is_leader()
+            self.adopt_term(header["term"])
+            stepped_down = was_leader
+        elif header["term"] == self.term and self.role == CANDIDATE:
+            # Someone else won this term. Stop standing.
+            self.role = FOLLOWER
+            self.votes = set()
+        if header["term"] >= self.term:
+            # Contact from a leader at or above our term holds the election off.
+            self.last_contact = time.monotonic()
+        result, match = self.log.accept(self.term, header["term"],
+                                        header["prev_index"], header["prev_term"],
+                                        header["count"], header["event"])
+        if result == APPEND_ACCEPTED:
+            # Commit no further than what we actually hold.
+            target = min(header["commit"], self.log.last_index())
+            if target > self.commit_index:
+                self.commit_index = target
+                self.net.replay(self.log, self.commit_index)
+        if stepped_down and self.config["Debug"]:
+            print("raft: stepping down, term=%d leader is elsewhere" % self.term,
+                  flush=True)
+        return (lab5_id_for(APPEND_ACK_BASE, self.node_id),
+                ack_encode(self.term, match, APPEND_RESULT_CODES[result]))
 
     def majority(self):
         """Report how many nodes make a majority.
