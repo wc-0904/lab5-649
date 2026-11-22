@@ -101,7 +101,7 @@ bool lab_valid(uint32_t id, const uint8_t data[8])
  * @param master_us Leader clock in microseconds; only the low 48 bits travel.
  * @param cycle Cycle counter, wrapping at 16 bits.
  */
-void lab5_ref_encode(uint8_t data[8], uint64_t master_us, uint16_t cycle)
+void lab5_ref_encode(uint8_t data[8], uint64_t master_us, uint16_t cycle, int master)
 {
 	/* Clamp rather than wrap: a clock before the epoch is a configuration
 	 * error, and sending zero makes that obvious instead of plausible.
@@ -113,8 +113,9 @@ void lab5_ref_encode(uint8_t data[8], uint64_t master_us, uint16_t cycle)
 	for (int i = 0; i < 6; i++) {
 		data[i] = (uint8_t)(clock >> (8 * i));
 	}
+	cycle &= LAB5_REF_CYCLE_MAX;
 	data[6] = (uint8_t)cycle;
-	data[7] = (uint8_t)(cycle >> 8);
+	data[7] = (uint8_t)((cycle >> 8) | ((uint8_t)((master - 1) & 3) << 6));
 }
 
 /** @brief Decode a REF payload.
@@ -123,13 +124,15 @@ void lab5_ref_encode(uint8_t data[8], uint64_t master_us, uint16_t cycle)
  */
 struct lab5_ref lab5_ref_decode(const uint8_t data[8])
 {
-	struct lab5_ref ref = {.master_us = 0, .cycle = 0};
+	struct lab5_ref ref = {.master_us = 0, .cycle = 0, .master = 0};
 
 	for (int i = 0; i < 6; i++) {
 		ref.master_us |= (uint64_t)data[i] << (8 * i);
 	}
 	ref.master_us += LAB5_EPOCH_US;
-	ref.cycle = (uint16_t)((uint16_t)data[6] | ((uint16_t)data[7] << 8));
+	ref.cycle = (uint16_t)((uint16_t)data[6] |
+			       (((uint16_t)data[7] & 0x3fU) << 8));
+	ref.master = ((data[7] >> 6) & 3) + 1;
 	return ref;
 }
 

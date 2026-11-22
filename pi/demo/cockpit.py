@@ -11,7 +11,7 @@ import sys
 import time
 
 from protocol import (APPEND, APPEND_ACK_BASE, LAB5_FILTER_ID, LAB5_FILTER_MASK,
-                      REF, is_consensus,
+                      REF, REQ_VOTE_BASE, VOTE_BASE, is_consensus,
                       CTRL, FAULT, HB1, HB2, HB3, BLINK, FORCE, CATALOG, FAULT_IDS,
                       CAN_FRAME, Dedup, payload, valid, decode_wheel, origin)
 from pps import Pps
@@ -187,6 +187,15 @@ class Cockpit:
                 self.pins.set(Pins.SYNC, True)
             return
         for node in range(1, self.cluster["N"] + 1):
+            if node == self.agent.node_id:
+                continue
+            if can_id == lab5_id_for(REQ_VOTE_BASE, node):
+                self.send_lab5(*self.agent.on_vote_request(node, data))
+                return
+            if can_id == lab5_id_for(VOTE_BASE, node):
+                if self.agent.on_vote(node, data):
+                    self.show_raft_state()
+                return
             if can_id == lab5_id_for(APPEND_ACK_BASE, node):
                 if self.agent.on_ack(node, data):
                     self.show_raft_state()
@@ -445,6 +454,8 @@ class Cockpit:
                         self.send(HB1, bytes((int(self.error), health)))
                     next_hb = now + .020
                 self.blink_tx(now)
+                if self.agent.election_tick(now):
+                    self.show_raft_state()
                 self.agent.ref_tx(now)
                 self.agent.append_tx(now)
                 if now >= next_drift:

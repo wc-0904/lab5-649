@@ -289,8 +289,13 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us, uint32_t local_cycles
 	 * trying to become the master itself.
 	 */
 	state.last_contact_ms = now;
-	if (state.role != RAFT_LEADER && state.leader == 0) {
-		state.leader = LAB5_CFG_DEFAULT_LEADER;
+	/*
+	 * The frame names its master, which is the only way a node learns who
+	 * leads when default_leader is random: REF and APPEND each use one
+	 * shared identifier and neither otherwise says who sent it.
+	 */
+	if (state.role != RAFT_LEADER && ref.master >= 1 && ref.master <= LAB5_CFG_N) {
+		state.leader = ref.master;
 	}
 	state.cycle = ref.cycle;
 	state.have_cycle = true;
@@ -548,7 +553,7 @@ bool raft_ref_tx(void)
 		 */
 		master_us = LAB5_EPOCH_US + (uint64_t)k_uptime_get() * 1000U;
 	}
-	lab5_ref_encode(data, master_us, cycle++);
+	lab5_ref_encode(data, master_us, cycle++, LAB_NODE_ID);
 	lab_can_send_lab5(LAB5_REF, data);
 	return true;
 }

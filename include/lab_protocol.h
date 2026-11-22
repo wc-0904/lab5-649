@@ -33,18 +33,35 @@ enum lab5_id { LAB5_REF = 0x008, LAB5_APPEND = 0x040, LAB5_APPEND_ACK_BASE = 0x0
  * 0x040..0x05f instead of one slot each.
  */
 enum lab5_filter { LAB5_FILTER_ID = 0x040, LAB5_FILTER_MASK = 0x7e0 };
-/** @brief Decoded REF payload: the leader's clock and its cycle counter.
+/** @brief Decoded REF payload: the master's clock, cycle counter and identity.
  *
  * Wire layout, little endian: bytes 0..5 are the master clock in microseconds
- * **since LAB5_EPOCH_US** as a 48 bit unsigned value, bytes 6..7 are a 16 bit
- * cycle counter. The offset matters: a CLOCK_REALTIME value in 2026 is about
- * 1.8e15 microseconds, which needs 51 bits and would be silently truncated to a
- * 1973 date. Measuring from a fixed recent epoch keeps microsecond resolution,
- * which is the unit the PPS spread is reported in, and still leaves the full 16
- * bit counter the TA reads to confirm no REF was missed. The encode and decode
- * calls take and return absolute microseconds, so the offset never leaks out.
+ * **since LAB5_EPOCH_US** as a 48 bit unsigned value, bytes 6 and the low six
+ * bits of byte 7 are a 14 bit cycle counter, and the top two bits of byte 7
+ * carry the master's node ID minus one.
+ *
+ * The epoch offset matters: a CLOCK_REALTIME value in 2026 is about 1.8e15
+ * microseconds, which needs 51 bits and would be silently truncated to a 1973
+ * date. Measuring from a fixed recent epoch keeps microsecond resolution, the
+ * unit the PPS spread is reported in.
+ *
+ * The identity matters because REF and APPEND share one identifier each and
+ * neither otherwise names its sender. With a pre-defined leader that is
+ * harmless, but `default_leader=random` boots every node with no leader known,
+ * and two behaviours key off who the master is: the one way delay constant,
+ * which belongs to the master's transmit path rather than to the bus, and the
+ * hazard rate, which is 2 Hz while the cockpit leads and 4 Hz once an STM32
+ * does. Checkoff steps 6 and 8 read both.
+ *
+ * The counter gave up the two bits because it has them to spare: at 14 bits it
+ * still wraps only every 16384 heartbeats, five and a half minutes, which is
+ * far longer than any gap it is meant to detect.
  */
-struct lab5_ref { uint64_t master_us; uint16_t cycle; };
+struct lab5_ref { uint64_t master_us; uint16_t cycle; int master; };
+/** @brief Bits of the REF payload given to the cycle counter. */
+#define LAB5_REF_CYCLE_BITS 14
+/** @brief Largest cycle value the REF payload can carry. */
+#define LAB5_REF_CYCLE_MAX ((1U << LAB5_REF_CYCLE_BITS) - 1U)
 /** @brief Decoded AppendEntries header.
  *
  * Wire layout, little endian: byte 0 term, bytes 1..2 prevLogIndex, byte 3
@@ -173,9 +190,10 @@ struct lab_control lab_decode(const uint8_t data[8]);
 /** @brief Encode a REF payload.
  * @param data Eight bytes to fill.
  * @param master_us Leader clock in microseconds; only the low 48 bits travel.
- * @param cycle Cycle counter, wrapping at 16 bits.
+ * @param cycle Cycle counter, wrapping at LAB5_REF_CYCLE_BITS bits.
+ * @param master Node ID of the transmitting master.
  */
-void lab5_ref_encode(uint8_t data[8], uint64_t master_us, uint16_t cycle);
+void lab5_ref_encode(uint8_t data[8], uint64_t master_us, uint16_t cycle, int master);
 /** @brief Decode a REF payload.
  * @param data Eight received bytes.
  * @return Master clock and cycle counter.

@@ -9,7 +9,8 @@ import time
 
 from protocol import (APPEND, APPEND_ACK_BASE, CLIENT_REQ_BASE,
                       CLIENT_REDIRECT as LAB5_CLIENT_REDIRECT, REF,
-                      lab5_id_for)
+                      REQ_VOTE_BASE, VOTE_BASE, lab5_id_for)
+from election import Election
 from network_state import (APPEND_ACCEPTED, Network, RaftLog,
                            event_link, event_name, event_node)
 from time_sync import TimeSync, delay_for, local_cycles as local_cycles_now
@@ -26,12 +27,17 @@ EPOCH_US = 1767225600000000
 
 #: Largest offset from EPOCH_US the 48 bit REF field can carry, about 8.9 years.
 REF_US_MAX = (1 << 48) - 1
+#: Bits of the REF payload given to the cycle counter; the top two of byte 7
+#: carry the master's node ID minus one. Must match LAB5_REF_CYCLE_BITS.
+REF_CYCLE_BITS = 14
+#: Largest cycle value the REF payload can carry.
+REF_CYCLE_MAX = (1 << REF_CYCLE_BITS) - 1
 
 #: Empty AppendEntries period in seconds, per checkoff step 2.
 APPEND_PERIOD = .100
 
 
-def ref_encode(master_us, cycle):
+def ref_encode(master_us, cycle, master=1):
     """Encode a REF payload: 48 bit microsecond clock, 16 bit cycle counter.
 
     :param master_us: Leader clock in microseconds; only the low 48 bits travel.
@@ -40,17 +46,19 @@ def ref_encode(master_us, cycle):
     """
     # Clamp rather than wrap: a clock before the epoch is a configuration error.
     clock = (0 if master_us < EPOCH_US else master_us - EPOCH_US) & REF_US_MAX
-    return bytes((clock >> (8 * i)) & 0xFF for i in range(6)) + struct.pack("<H", cycle & 0xFFFF)
+    packed = (cycle & REF_CYCLE_MAX) | (((master - 1) & 3) << 14)
+    return bytes((clock >> (8 * i)) & 0xFF for i in range(6)) + struct.pack("<H", packed)
 
 
 def ref_decode(data):
     """Decode a REF payload.
 
     :param data: Eight received bytes.
-    :return: (master_us, cycle).
+    :return: (master_us, cycle, master node id).
     """
     clock = sum(data[i] << (8 * i) for i in range(6)) + EPOCH_US
-    return clock, struct.unpack_from("<H", data, 6)[0]
+    packed = struct.unpack_from("<H", data, 6)[0]
+    return clock, packed & REF_CYCLE_MAX, ((packed >> 14) & 3) + 1
 
 
 def append_encode(term, prev_index, prev_term, commit, count=0, event=0):
@@ -145,6 +153,56 @@ def ack_decode(data):
     """
     term, match_index, result = struct.unpack("<BHB4x", data)
     return {"term": term, "match_index": match_index, "result": result}
+
+
+def vote_request_encode(term, last_index, last_term):
+    """Encode a vote request.
+
+    Must match struct lab5_vote_request in include/lab_protocol.h: byte 0 the
+    candidate's term, bytes 1..2 its last log index, byte 3 that entry's term.
+    The identifier says who is standing, so no candidate field is carried.
+
+    :param term: Candidate's term.
+    :param last_index: Index of the last entry in the candidate's log.
+    :param last_term: Term of that entry.
+    :return: Eight bytes.
+    """
+    return struct.pack("<BHB4x", term & 0xFF, last_index & 0xFFFF, last_term & 0xFF)
+
+
+def vote_request_decode(data):
+    """Decode a vote request.
+
+    :param data: Eight received bytes.
+    :return: (term, last_index, last_term).
+    """
+    return struct.unpack("<BHB4x", bytes(data[:8]))
+
+
+def vote_encode(term, granted, candidate):
+    """Encode a vote.
+
+    Must match struct lab5_vote: byte 0 the voter's term, byte 1 nonzero when
+    granted, byte 2 the candidate being answered. The candidate is not
+    redundant: two candidates can stand in one term and a vote meant for one
+    must not count towards the other's majority.
+
+    :param term: Voter's term.
+    :param granted: True to grant.
+    :param candidate: Node being answered.
+    :return: Eight bytes.
+    """
+    return struct.pack("<BBB5x", term & 0xFF, 1 if granted else 0, candidate & 0xFF)
+
+
+def vote_decode(data):
+    """Decode a vote.
+
+    :param data: Eight received bytes.
+    :return: (term, granted, candidate).
+    """
+    term, granted, candidate = struct.unpack("<BBB5x", bytes(data[:8]))
+    return term, bool(granted), candidate
 
 
 def append_decode(data):
@@ -249,6 +307,151 @@ class RaftAgent:
         self.sync = TimeSync(hz=1000000)
         self.master_offset_us = 0
         self.refs_received = 0
+        # Election. Mirrors src/raft_agent.c; see TASKS.md D13 and D14.
+        self.election = Election(config["election_seed"], node_id)
+        self.election_base_ms = config["missed_heartbeats"] * config["heartbeat_ms"]
+        self.election_timeout = self.draw_timeout()
+        self.voted_for = 0
+        self.votes = set()
+        self.last_contact = time.monotonic()
+        self.elections = 0
+
+    def draw_timeout(self):
+        """Draw an election timeout in seconds.
+
+        A fresh draw for every round, not one reused: two nodes that collided
+        once would otherwise collide again on every retry.
+
+        :return: Timeout in seconds.
+        """
+        jitter = self.config["election_timeout_jitter_ms"]
+        return self.election.timeout_ms(self.election_base_ms, jitter) / 1000
+
+    def adopt_term(self, term):
+        """Step down to follower in a newer term.
+
+        Raft's one unconditional rule: any message carrying a higher term makes
+        this node a follower in that term, whatever it was doing.
+
+        :param term: The newer term.
+        """
+        self.term = term
+        self.role = FOLLOWER
+        self.leader = 0
+        self.voted_for = 0
+        self.votes = set()
+
+    def log_is_current(self, last_index, last_term):
+        """Report whether a candidate's log is at least as current as ours.
+
+        The up to date test from Raft 5.4.1, and the reason an election cannot
+        lose a committed entry: a candidate missing entries cannot gather a
+        majority because every node holding them refuses it.
+
+        :param last_index: Candidate's last log index.
+        :param last_term: Term of that entry.
+        :return: True when the candidate may be voted for.
+        """
+        mine_index = self.log.last_index()
+        mine_term = self.log.term_at(mine_index) if mine_index else 0
+        if mine_term is None:
+            # Aged out of the ring: do not claim to be ahead on evidence we no
+            # longer hold.
+            return True
+        if last_term != mine_term:
+            return last_term > mine_term
+        return last_index >= mine_index
+
+    def election_tick(self, now):
+        """Start an election if nothing has been heard from a leader.
+
+        :param now: Monotonic time from the caller's loop.
+        :return: True when this node started standing.
+        """
+        if self.role == LEADER or now - self.last_contact < self.election_timeout:
+            return False
+        self.term += 1
+        self.role = CANDIDATE
+        self.leader = 0
+        self.voted_for = self.node_id
+        # A candidate votes for itself, the first of the majority.
+        self.votes = {self.node_id}
+        self.last_contact = now
+        self.election_timeout = self.draw_timeout()
+        self.elections += 1
+        last_index = self.log.last_index()
+        last_term = self.log.term_at(last_index) or 0 if last_index else 0
+        self.send(lab5_id_for(REQ_VOTE_BASE, self.node_id),
+                  vote_request_encode(self.term, last_index, last_term))
+        if self.config["Debug"]:
+            print("raft: standing term=%d last=%d/%d next timeout=%d ms"
+                  % (self.term, last_index, last_term,
+                     self.election_timeout * 1000), flush=True)
+        return True
+
+    def on_vote_request(self, node, data):
+        """Answer a vote request.
+
+        :param node: Node that sent it, taken from the identifier.
+        :param data: Eight received bytes.
+        :return: (can_id, payload) to transmit.
+        """
+        term, last_index, last_term = vote_request_decode(data)
+        if term > self.term:
+            self.adopt_term(term)
+        granted = (term >= self.term and self.log_is_current(last_index, last_term)
+                   and self.voted_for in (0, node))
+        if granted:
+            self.voted_for = node
+            # Granting restarts the timer. Without this every node that voted
+            # would stand itself a moment later and the term would climb on
+            # every round without anyone winning.
+            self.last_contact = time.monotonic()
+        if self.config["Debug"]:
+            print("raft: vote %s for %s term=%d"
+                  % ("granted" if granted else "refused",
+                     self.config["nodes"][node - 1], term), flush=True)
+        return (lab5_id_for(VOTE_BASE, self.node_id),
+                vote_encode(self.term, granted, node))
+
+    def on_vote(self, node, data):
+        """Count a vote and take the leadership on a majority.
+
+        :param node: Node that voted, taken from the identifier.
+        :param data: Eight received bytes.
+        :return: True when this node just became leader.
+        """
+        term, granted, candidate = vote_decode(data)
+        if term > self.term:
+            self.adopt_term(term)
+            return False
+        # Three tests: this term, addressed to this candidate because two can
+        # stand at once, and this node still standing.
+        if not (self.role == CANDIDATE and term == self.term
+                and candidate == self.node_id and granted):
+            return False
+        self.votes.add(node)
+        if len(self.votes) < self.majority():
+            return False
+        self.role = LEADER
+        self.leader = self.node_id
+        self.last_contact = time.monotonic()
+        # The global estimate this node held as a follower becomes what it now
+        # stamps into REF, which is why the handover does not step the timeline.
+        self.adopt_master_role()
+        self.next_index = {peer: self.log.last_index() + 1 for peer in self.peers}
+        self.match_index = {peer: 0 for peer in self.peers}
+        if self.config["Debug"]:
+            print("raft: LEADER term=%d with %d of %d votes"
+                  % (self.term, len(self.votes), self.config["N"]), flush=True)
+        return True
+
+    def majority(self):
+        """Report how many nodes make a majority.
+
+        :return: N // 2 + 1.
+        """
+        return self.config["N"] // 2 + 1
 
     def is_leader(self):
         """Report whether this node currently leads.
@@ -280,7 +483,16 @@ class RaftAgent:
         """
         if self.is_leader():
             return False
-        master_us, cycle = ref_decode(data)
+        master_us, cycle, master = ref_decode(data)
+        # The frame names its master, which is the only way a node learns who
+        # leads when default_leader is random: REF and APPEND each use one
+        # shared identifier and neither otherwise says who sent it.
+        if 1 <= master <= self.config["N"]:
+            self.leader = master
+        # A reference is contact from a live leader, so it holds this node's
+        # own election off. Without it the Pi would stand against a healthy
+        # STM32 master every 60 to 99 ms.
+        self.last_contact = time.monotonic()
         # The delay belongs to the master's transmit path, so it follows the
         # master rather than being fixed for the cluster.
         self.sync.delay_us = delay_for(self.leader)
@@ -322,8 +534,8 @@ class RaftAgent:
         """
         if not self.is_leader() or not self.ref_timer.due(now):
             return
-        self.send(REF, ref_encode(self.master_us(), self.cycle))
-        self.cycle = (self.cycle + 1) & 0xFFFF
+        self.send(REF, ref_encode(self.master_us(), self.cycle, self.node_id))
+        self.cycle = (self.cycle + 1) & REF_CYCLE_MAX
         self.refs_sent += 1
 
     def append_tx(self, now):

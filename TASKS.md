@@ -813,9 +813,33 @@ Three correctness points that only appear once a node can lead:
 - **A leader is its own time master**, so SYNC is lit for it by definition; it
   receives no reference to keep the flag fresh.
 
-Still to do: the Pi's half of the election in `pi/demo/raft_agent.py`, the
-`LEADER=random` boot mode (**D13**), host tests for the state machine, and the
-bench work, which is where `LAB5_DELAY_STM32_US` stops being a guess.
+**D13 settled: hold an election, do not wait.** `none` and `random` already
+parsed to `default_leader_id = 0`, so every node boots a follower in term 0 and
+the timeout elects one with no extra mechanism.
+
+Testing that exposed a real gap, now closed. **In random mode no follower knew
+who the leader was.** REF and APPEND each use one shared identifier and neither
+payload named its sender, which is harmless with a pre-defined leader and wrong
+without one, because two behaviours key off the master's identity: the one way
+delay constant, which belongs to the master's transmit path rather than to the
+bus, and the hazard rate, 2 Hz while the cockpit leads and 4 Hz once an STM32
+does. Checkoff steps 6 and 8 read both.
+
+REF now carries the master's node ID in the top two bits of byte 7, taken from
+the cycle counter, which had them to spare: at 14 bits it still wraps only every
+16384 heartbeats, five and a half minutes, far longer than any gap it exists to
+detect. The TA still reads the clock and counter out of REF at step 2.
+
+`tests/test_lab5_vote.py`, 21 cases, drives the Pi's state machine, which mirrors
+the firmware's, and compiles the vote codecs from the real C to compare byte for
+byte. What it pins is what makes an election *safe* rather than merely
+terminating: a stale log cannot win, a higher last term beats a longer log, a
+vote only counts for the candidate it names, a node votes once per term but will
+re-grant to the same candidate so a lost vote is recoverable, and granting holds
+off the voter's own election. 147 host tests pass in total.
+
+Still to do: the bench work, which is where `LAB5_DELAY_STM32_US` stops being a
+guess, and the Pi rejoining as a follower, which belongs to P10.
 
 | # | Task | Where | Done when |
 |---|---|---|---|

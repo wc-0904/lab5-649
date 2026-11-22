@@ -14,8 +14,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "pi" / "demo"))
 
-from raft_agent import (EPOCH_US, REF_US_MAX, append_decode, append_encode,
-                        ref_decode, ref_encode)
+from raft_agent import (EPOCH_US, REF_CYCLE_MAX, REF_US_MAX, append_decode,
+                        append_encode, ref_decode, ref_encode)
 
 HARNESS = r"""
 #include "lab_protocol.h"
@@ -34,12 +34,13 @@ int main(int argc, char **argv)
 {
 	uint8_t data[8];
 
-	if (argc == 4 && argv[1][0] == 'r') {
+	if (argc == 5 && argv[1][0] == 'r') {
 		lab5_ref_encode(data, strtoull(argv[2], NULL, 0),
-				(uint16_t)strtoul(argv[3], NULL, 0));
+				(uint16_t)strtoul(argv[3], NULL, 0), atoi(argv[4]));
 		dump(data);
 		struct lab5_ref back = lab5_ref_decode(data);
-		printf("%llu %u\n", (unsigned long long)back.master_us, back.cycle);
+		printf("%llu %u %d\n", (unsigned long long)back.master_us, back.cycle,
+		       back.master);
 		return 0;
 	}
 	if (argc == 8 && argv[1][0] == 'a') {
@@ -98,31 +99,50 @@ class WireFormatTests(unittest.TestCase):
         return encoded, decoded
 
     def test_ref_matches_firmware(self):
-        cases = [(EPOCH_US, 0), (EPOCH_US + 1, 1), (EPOCH_US + 1_000_000, 7),
-                 (EPOCH_US + 0x1234567890AB, 0xBEEF),
-                 (EPOCH_US + REF_US_MAX, 0xFFFF)]
-        for master_us, cycle in cases:
-            with self.subTest(master_us=master_us, cycle=cycle):
-                encoded, decoded = self.c_run("r", master_us, cycle)
-                self.assertEqual(encoded, ref_encode(master_us, cycle).hex())
-                self.assertEqual(decoded, "%d %d" % (master_us, cycle))
-                self.assertEqual(ref_decode(ref_encode(master_us, cycle)),
-                                 (master_us, cycle))
+        cases = [(EPOCH_US, 0, 1), (EPOCH_US + 1, 1, 2), (EPOCH_US + 1_000_000, 7, 3),
+                 (EPOCH_US + 0x1234567890AB, 0x2EEF, 2),
+                 (EPOCH_US + REF_US_MAX, REF_CYCLE_MAX, 3)]
+        for master_us, cycle, master in cases:
+            with self.subTest(master_us=master_us, cycle=cycle, master=master):
+                encoded, decoded = self.c_run("r", master_us, cycle, master)
+                self.assertEqual(encoded, ref_encode(master_us, cycle, master).hex())
+                self.assertEqual(decoded, "%d %d %d" % (master_us, cycle, master))
+                self.assertEqual(ref_decode(ref_encode(master_us, cycle, master)),
+                                 (master_us, cycle, master))
+
+    def test_the_master_identity_survives_a_full_cycle_counter(self):
+        """The two fields share byte 7, so a saturated counter must not corrupt it.
+
+        Without masking, a cycle at the old 16 bit width would overwrite the
+        identity bits and every follower would believe node 3 was master.
+        """
+        for master in (1, 2, 3):
+            with self.subTest(master=master):
+                clock, cycle, back = ref_decode(
+                    ref_encode(EPOCH_US, REF_CYCLE_MAX, master))
+                self.assertEqual((clock, cycle, back),
+                                 (EPOCH_US, REF_CYCLE_MAX, master))
+
+    def test_the_cycle_counter_still_outlasts_any_gap_it_detects(self):
+        """14 bits wraps every 16384 heartbeats, five and a half minutes."""
+        from cluster_config import load as load_config
+        heartbeat_ms = load_config(ROOT / "config" / "cluster.conf")["heartbeat_ms"]
+        self.assertGreater((REF_CYCLE_MAX + 1) * heartbeat_ms / 1000, 300)
 
     def test_a_real_wall_clock_survives_the_round_trip(self):
         # 2026-11-19 is about 1.8e15 us since the Unix epoch, which needs 51 bits.
         # Without the epoch offset this truncated to a 1973 date on the wire.
         now_us = 1795000000 * 1_000_000
         self.assertGreater(now_us, REF_US_MAX)
-        encoded, decoded = self.c_run("r", now_us, 871)
-        self.assertEqual(encoded, ref_encode(now_us, 871).hex())
-        self.assertEqual(decoded, "%d %d" % (now_us, 871))
-        self.assertEqual(ref_decode(ref_encode(now_us, 871)), (now_us, 871))
+        encoded, decoded = self.c_run("r", now_us, 871, 1)
+        self.assertEqual(encoded, ref_encode(now_us, 871, 1).hex())
+        self.assertEqual(decoded, "%d %d %d" % (now_us, 871, 1))
+        self.assertEqual(ref_decode(ref_encode(now_us, 871, 1)), (now_us, 871, 1))
 
     def test_a_clock_before_the_epoch_clamps_rather_than_wrapping(self):
-        encoded, _ = self.c_run("r", EPOCH_US - 1, 5)
-        self.assertEqual(encoded, ref_encode(EPOCH_US - 1, 5).hex())
-        self.assertEqual(ref_decode(ref_encode(EPOCH_US - 1, 5)), (EPOCH_US, 5))
+        encoded, _ = self.c_run("r", EPOCH_US - 1, 5, 1)
+        self.assertEqual(encoded, ref_encode(EPOCH_US - 1, 5, 1).hex())
+        self.assertEqual(ref_decode(ref_encode(EPOCH_US - 1, 5, 1)), (EPOCH_US, 5, 1))
 
     def test_epoch_constant_matches_the_firmware(self):
         header = (ROOT / "include" / "lab_protocol.h").read_text()
@@ -192,11 +212,11 @@ class AgentTests(unittest.TestCase):
 
     def test_ref_cycle_counter_increments_and_wraps(self):
         agent, sent = self.agent("cockpit")
-        agent.cycle = 0xFFFE
+        agent.cycle = REF_CYCLE_MAX - 1
         for tick in range(3):
             agent.ref_tx(tick * .020)
         cycles = [ref_decode(data)[1] for _, data in sent]
-        self.assertEqual(cycles, [0xFFFE, 0xFFFF, 0])
+        self.assertEqual(cycles, [REF_CYCLE_MAX - 1, REF_CYCLE_MAX, 0])
 
     def test_schedule_is_absolute_so_a_late_tick_does_not_drift(self):
         agent, sent = self.agent("cockpit")
