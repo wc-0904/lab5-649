@@ -1250,7 +1250,28 @@ matching on the flag alone covers every relayer.
 carries the flag. With three nodes one hop always suffices, so nothing is lost,
 and no loop is possible regardless of topology.
 
-**D25 settled: relaying is a reflex, not a routing decision.** A node holding
+**D25 revised after the bench: a reflex, but only while something needs it.**
+Relaying every frame unconditionally saturated the buses. Each Lab 5 frame
+generated relayed copies that shared the same transmit queues as Lab 3's
+`CTRL`, and when a queue fills frames are dropped; `relay_task` additionally
+discards anything older than 10 ms. So `CTRL` stopped reaching the node that
+needed it most, that node lost `have_ctrl`, and it sat in the error state
+flashing hazards while the consensus layer reported `mode=OK` and a complete
+graph. The control plane was perfect and the vehicle was dead.
+
+The gate is a proof rather than a heuristic: **while every node holds both
+links, a relayed copy is redundant**, because the originator already transmits
+on both buses, so the copy reaches nobody new. `raft_relay_needed()` consults
+the committed graph and relaying runs only when some node is missing a link.
+
+That reintroduces a bounded form of the convergence window, which is the honest
+trade: relaying begins once a link failure is committed, about a second. But
+the node that lost a link is still reachable on its remaining bus, and that is
+the same bus it uses to report the failure, so **the report itself is never the
+thing that cannot get through**. The window delays recovery of traffic to that
+node; it cannot prevent the recovery from being triggered.
+
+**D25 originally: relaying is a reflex, not a routing decision.** A node holding
 both links forwards one copy and does **not** consult its routing table to
 decide whether anyone needs it. This is the direct answer to the handout's
 section 5.2 warning that after a second link failure the tables take several

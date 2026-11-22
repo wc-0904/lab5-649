@@ -20,6 +20,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "pi" / "demo"))
 
+from cluster_config import load  # noqa: E402
+from network_state import event_link, event_node  # noqa: E402
+from raft_agent import RaftAgent  # noqa: E402
 from protocol import (APPEND, APPEND_ACK_BASE, CLIENT_REQ_BASE,  # noqa: E402
                       LAB5_FILTER_ID, LAB5_FILTER_MASK, LAB5_RELAY_FLAG, REF,
                       LAB5_RELAY_NODE_MASK, LAB5_RELAY_NODE_SHIFT,
@@ -166,6 +169,61 @@ class FirmwareAgreementTests(unittest.TestCase):
                 self.assertEqual(relayed, relay_id(can_id, 2))
                 self.assertEqual(origin, origin_id(can_id))
                 self.assertEqual(bool(flagged), is_relayed(can_id))
+
+
+class RelayGateTests(unittest.TestCase):
+    """Relaying only when something actually needs it.
+
+    With every node holding both links a relayed copy is provably redundant:
+    the originator already transmits on both buses, so the copy reaches nobody
+    new and only consumes bus and transmit queue capacity. On the bench that
+    waste pushed Lab 3's CTRL out of the queues, and the node that stopped
+    receiving it sat in the error state flashing hazards while consensus
+    reported everything healthy.
+    """
+
+    def setUp(self):
+        """Load the real cluster configuration."""
+        self.config = load(ROOT / "config" / "cluster.conf")
+
+    def agent(self):
+        """Build an agent with a fully healthy committed graph.
+
+        :return: The agent.
+        """
+        agent = RaftAgent(self.config, 1, lambda i, d: None)
+        for node in (1, 2, 3):
+            agent.log.append(1, event_node(node, True))
+            for bus in (1, 2):
+                agent.log.append(1, event_link(node, bus, True))
+        agent.commit_index = agent.log.last_index()
+        agent.net.replay(agent.log, agent.commit_index)
+        return agent
+
+    def test_a_healthy_cluster_does_not_relay(self):
+        """Every frame already reaches every node on one bus or the other."""
+        self.assertFalse(self.agent().relay_needed())
+
+    def test_a_missing_link_turns_relaying_on(self):
+        """Exactly the topology checkoff step 5 builds."""
+        agent = self.agent()
+        agent.log.append(1, event_link(3, 1, False))
+        agent.commit_index = agent.log.last_index()
+        agent.net.replay(agent.log, agent.commit_index)
+        self.assertTrue(agent.relay_needed())
+
+    def test_a_node_that_is_down_does_not_demand_relaying(self):
+        """Its links go with it; there is nobody left to reach."""
+        agent = self.agent()
+        agent.log.append(1, event_node(3, False))
+        agent.commit_index = agent.log.last_index()
+        agent.net.replay(agent.log, agent.commit_index)
+        self.assertFalse(agent.relay_needed())
+
+    def test_an_empty_graph_does_not_demand_relaying(self):
+        """At boot nothing is known, and nothing needs bridging yet."""
+        agent = RaftAgent(self.config, 1, lambda i, d: None)
+        self.assertFalse(agent.relay_needed())
 
 
 if __name__ == "__main__":
