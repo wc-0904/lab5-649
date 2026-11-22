@@ -59,6 +59,11 @@ void lab_can_send_lab5(uint16_t id, const uint8_t data[8]);
  * @return True when a frame was received on that bus within the last 100 ms.
  */
 bool lab_can_link_healthy(int bus);
+/** @brief Report whether any frame arrived on either bus within a window.
+ * @param window_ms Window length in milliseconds.
+ * @return True when this node heard something on at least one bus.
+ */
+bool lab_can_heard_within(uint32_t window_ms);
 /** @brief Read the controller's state and error counters, for diagnosis.
  *
  * A link reported down is either a real electrical fault or a detection

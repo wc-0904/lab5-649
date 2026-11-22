@@ -383,6 +383,19 @@ bool lab_can_link_healthy(int bus)
 	return age < LAB_LINK_SILENCE_MS;
 }
 
+bool lab_can_heard_within(uint32_t window_ms)
+{
+	uint32_t now = k_uptime_get_32();
+
+	for (int bus = 0; bus < 2; bus++) {
+		if (atomic_get(&heard[bus]) &&
+		    now - (uint32_t)atomic_get(&last_rx_ms[bus]) < window_ms) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /** @brief Send a Lab 5 frame onto both buses with the payload untouched.
  * @param id Lab 5 identifier from enum lab5_id.
  * @param data Eight bytes, sent exactly as given.

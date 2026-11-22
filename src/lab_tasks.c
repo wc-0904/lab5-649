@@ -815,7 +815,7 @@ static void monitor_task(void *a, void *b, void *c)
 		pps_refine();
 		/* SYNC tracks liveness, so it has to age out here, not only on RX. */
 		raft_agent_tick(now);
-		raft_election_tick(now);
+		raft_election_tick(now, lab_can_heard_within(LAB5_ISOLATION_MS));
 		raft_append_tx(now);
 		raft_client_poll(now);
 		/*

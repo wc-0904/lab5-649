@@ -107,8 +107,10 @@ bool raft_last_ref(struct lab5_ref *ref, uint64_t *local_us);
  * Called from the monitor task. A fresh timeout is drawn for every round, so
  * two nodes that collided once do not collide again on every retry.
  * @param now_ms Current uptime in milliseconds.
+ * @param hearing True when this node heard any frame within LAB5_ISOLATION_MS.
+ *        A node that hears nothing does not stand and restarts its timeout.
  */
-void raft_election_tick(int64_t now_ms);
+void raft_election_tick(int64_t now_ms, bool hearing);
 /** @brief Answer a vote request.
  * @param data Eight received bytes.
  * @param from Node that sent it, taken from the identifier.

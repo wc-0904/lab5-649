@@ -1467,6 +1467,16 @@ on the edges when the jumpers were restored.
 Reuse the Lab 3 behavior and add the rule that the term changes only if the isolated
 node was leader, and exactly once.
 
+**Written, not yet on hardware.** Plain Raft broke the rule: an isolated
+follower stood every 60 to 99 ms, raising its term each time, and on
+reconnection its higher term made the leader step down. Now a node stands only
+if it heard any frame within `LAB5_ISOLATION_MS` (30 ms, under the 60 ms minimum
+timeout); while cut off it restarts its timeout instead, so on reconnection the
+leader's 20 ms REF arrives inside the fresh timeout and it rejoins with its term
+unchanged. An isolated leader is still replaced, once, by the two followers that
+can hear each other. The test button latches local failure, stops HB and relay
+as in Lab 3, and leaves Raft running, so it does not change the term.
+
 ### P13. Integration and demo rehearsal
 
 With the schedule covered there is room to do this properly rather than discover it in

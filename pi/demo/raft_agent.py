@@ -87,6 +87,12 @@ def append_encode(term, prev_index, prev_term, commit, count=0, entry_term=0,
 #: Receive silence on a bus after which this node calls its own link down,
 #: seconds. Something arrives every 20 ms on a healthy bus.
 LINK_SILENCE = 0.100
+#: Receive silence after which this node treats itself as cut off and does not
+#: stand for election, seconds. An isolated follower that kept standing would
+#: raise its term every timeout, and on reconnection make the leader step down,
+#: which checkoff step 10 forbids. Shorter than the 60 ms minimum election
+#: timeout. Must match LAB5_ISOLATION_MS in include/lab_protocol.h.
+ISOLATION_WINDOW = 0.030
 #: How long a change must hold before it is reported, seconds. Asymmetric for
 #: the same reason as the firmware's: a log entry is permanent, so coming up
 #: late is free while a false entry is not. The down bar sits above the longest
@@ -419,13 +425,19 @@ class RaftAgent:
             return last_term > mine_term
         return last_index >= mine_index
 
-    def election_tick(self, now):
+    def election_tick(self, now, hearing=True):
         """Start an election if nothing has been heard from a leader.
 
         :param now: Monotonic time from the caller's loop.
+        :param hearing: True when any frame arrived within ISOLATION_WINDOW. A
+            node that hears nothing is cut off: it does not stand, and restarts
+            its timeout so it rejoins quietly when reconnected.
         :return: True when this node started standing.
         """
         if self.role == LEADER or now - self.last_contact < self.election_timeout:
+            return False
+        if not hearing:
+            self.last_contact = now
             return False
         self.term += 1
         self.role = CANDIDATE

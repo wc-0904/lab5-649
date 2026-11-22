@@ -189,6 +189,43 @@ class ElectionStateTests(unittest.TestCase):
         self.assertEqual(h.agent.term, before + 1)
         self.assertEqual(h.last()[0], lab5_id_for(REQ_VOTE_BASE, 2))
 
+    def test_an_isolated_follower_never_raises_its_term(self):
+        """Checkoff step 10: cut off from both buses, a follower keeps its term.
+
+        Plain Raft would stand every timeout and, on reconnection, make the
+        leader step down even though the leader never failed.
+        """
+        h = self.agent(2)
+        before = h.agent.term
+        sent = len(h.sent)
+        t = h.agent.last_contact
+        for _ in range(100):           # ten seconds of 100 ms ticks, hearing nothing
+            t += 0.1
+            self.assertFalse(h.agent.election_tick(t, hearing=False))
+        self.assertEqual(h.agent.term, before)
+        self.assertNotEqual(h.agent.role, CANDIDATE)
+        self.assertEqual(len(h.sent), sent)
+
+    def test_reconnection_waits_a_full_timeout_before_standing(self):
+        """The first frame heard after isolation must not trigger a stand.
+
+        A peer heartbeat can arrive before the leader's REF; the leader is
+        alive, so the node must give REF a full timeout to show up.
+        """
+        h = self.agent(2)
+        t = h.agent.last_contact + 5.0
+        h.agent.election_tick(t, hearing=False)
+        before = h.agent.term
+        self.assertFalse(h.agent.election_tick(t + 0.020, hearing=True))
+        self.assertEqual(h.agent.term, before)
+
+    def test_a_follower_that_hears_a_peer_still_stands(self):
+        """Leader gone but the other follower audible: the election goes ahead."""
+        h = self.agent(2)
+        before = h.agent.term
+        self.assertTrue(h.agent.election_tick(h.agent.last_contact + 1.0, hearing=True))
+        self.assertEqual(h.agent.term, before + 1)
+
     def test_a_leader_never_stands(self):
         """A leader has nothing to hear from, so it must not time itself out."""
         h = self.agent(1)

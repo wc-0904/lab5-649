@@ -22,7 +22,7 @@ from time_sync import local_cycles as local_cycles_now
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "part0"))
 from can_check import discover
 from cluster_config import load as load_cluster_config, node_id as cluster_node_id
-from raft_agent import RaftAgent
+from raft_agent import ISOLATION_WINDOW, RaftAgent
 from network_state import event_link, event_node
 from protocol import APPEND_ACK_BASE as _ACK, CLIENT_REQ_BASE, lab5_id_for
 
@@ -497,7 +497,8 @@ class Cockpit:
                         self.send(HB1, bytes((int(self.error), health)))
                     next_hb = now + .020
                 self.blink_tx(now)
-                if self.agent.election_tick(now):
+                hearing = any(now - t < ISOLATION_WINDOW for t in self.last_rx)
+                if self.agent.election_tick(now, hearing):
                     self.show_raft_state()
                 event = self.agent.poll_links(self.last_rx, now)
                 if event is not None:

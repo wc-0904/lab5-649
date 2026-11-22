@@ -841,8 +841,9 @@ void raft_on_client_request(const uint8_t data[8], int from)
  * rather than reused, because two nodes that collided once would otherwise
  * collide again on every retry.
  * @param now_ms Current uptime in milliseconds.
+ * @param hearing True when this node heard any frame within LAB5_ISOLATION_MS.
  */
-void raft_election_tick(int64_t now_ms)
+void raft_election_tick(int64_t now_ms, bool hearing)
 {
 	struct lab5_vote_request request = {0};
 	uint8_t data[8];
@@ -851,7 +852,17 @@ void raft_election_tick(int64_t now_ms)
 
 	k_spinlock_key_t key = k_spin_lock(&state_lock);
 
-	if (state.role != RAFT_LEADER &&
+	if (state.role != RAFT_LEADER && !hearing &&
+	    now_ms - state.last_contact_ms >= (int64_t)state.timeout_ms) {
+		/*
+		 * Cut off from both buses: standing cannot win, and raising the
+		 * term here would make the leader step down on reconnection even
+		 * though it never failed (checkoff step 10). Restart the clock
+		 * instead, so on reconnection the leader's 20 ms REF arrives well
+		 * inside the fresh timeout and this node rejoins quietly.
+		 */
+		state.last_contact_ms = now_ms;
+	} else if (state.role != RAFT_LEADER &&
 	    now_ms - state.last_contact_ms >= (int64_t)state.timeout_ms) {
 		state.term++;
 		state.role = RAFT_CANDIDATE;

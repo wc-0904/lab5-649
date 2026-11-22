@@ -210,6 +210,21 @@ enum lab5_delay {
  */
 #define LAB5_RELAY_DELAY_US 2000U
 
+/**
+ * @brief Receive silence, in ms, after which a node treats itself as cut off
+ * and does not stand for election.
+ *
+ * Checkoff step 10 requires the term to change only if the isolated node was
+ * the leader. Plain Raft fails that: an isolated follower times out every 60 to
+ * 99 ms, raises its term each time, and when reconnected its higher term makes
+ * the leader step down. Every live node heartbeats on both buses every 20 ms,
+ * so a node that has heard nothing for 30 ms is cut off and could not win
+ * anyway. Shorter than the 60 ms minimum election timeout so the guard is in
+ * place before the first timeout fires. Must match ISOLATION_WINDOW in
+ * pi/demo/raft_agent.py.
+ */
+#define LAB5_ISOLATION_MS 30U
+
 #define LAB5_EPOCH_US 1767225600000000ULL
 /** @brief Decoded AppendEntries acknowledgement.
  *
