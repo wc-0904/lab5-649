@@ -137,6 +137,11 @@ static struct {
 	bool cockpit_alive;
 	/* Which follower the next AppendEntries is aimed at. */
 	int append_peer;
+	/* The event this node last recorded for itself while leading, and
+	 * where, so one still in flight is not recorded a second time.
+	 */
+	uint8_t self_event;
+	uint32_t self_index;
 } state;
 static struct k_spinlock state_lock;
 
@@ -468,6 +473,9 @@ static void become_leader(void)
 	 * commit.
 	 */
 	state.cockpit_known = false;
+	/* A new leader's log is its own; nothing recorded before is in flight. */
+	state.self_event = RAFT_EVENT_NONE;
+	state.self_index = 0;
 }
 
 /** @brief Commit the highest index a majority has stored, in the leader's term.
@@ -1202,6 +1210,18 @@ void raft_client_poll(int64_t now_ms)
 		request = state.pending_request;
 		retry = true;
 	}
+	if (event != RAFT_EVENT_NONE && state.role == RAFT_LEADER &&
+	    state.self_event == event && state.self_index > state.commit_index) {
+		/*
+		 * Already recorded and still waiting to commit. A leader
+		 * records its own reports directly, bypassing the duplicate
+		 * suppression that covers other nodes' requests, so without
+		 * this the self-healing check re-reports on every pass while
+		 * the commit catches up and the log grows without bound.
+		 */
+		state.pending_event = RAFT_EVENT_NONE;
+		event = RAFT_EVENT_NONE;
+	}
 	if (event != RAFT_EVENT_NONE && state.role == RAFT_LEADER) {
 		/*
 		 * This node is the leader, so it records its own report rather
@@ -1215,6 +1235,8 @@ void raft_client_poll(int64_t now_ms)
 		 */
 		local = raft_log_append(&state.log, (uint8_t)state.term, event);
 		recorded = event;
+		state.self_event = event;
+		state.self_index = local;
 		state.match_index[LAB_NODE_ID] = raft_log_last_index(&state.log);
 		state.pending_event = RAFT_EVENT_NONE;
 		event = RAFT_EVENT_NONE;

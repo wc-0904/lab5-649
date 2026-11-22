@@ -321,6 +321,54 @@ class CockpitLinkDetectionTests(unittest.TestCase):
                          event_link(1, 2, False))
 
 
+class SelfReportFloodTests(unittest.TestCase):
+    """The self-healing check must not append the same entry every pass.
+
+    A leader records its own reports directly, bypassing the duplicate
+    suppression that covers other nodes' requests. The committed graph always
+    lags the log, so without a guard the healing check re-reports on every
+    poll while the commit catches up. On the bench the cockpit reached index
+    3852 of one repeated CANLINK_cockpit_2_UP.
+    """
+
+    def setUp(self):
+        """Load the real cluster configuration."""
+        self.config = load(ROOT / "config" / "cluster.conf")
+
+    def test_an_in_flight_report_is_not_appended_again(self):
+        """The exact loop: graph lags, check fires, leader appends, repeat."""
+        h = Harness(1, self.config)
+        h.agent.self_events = []
+        for _ in range(50):
+            h.agent.client_report(event_link(1, 2, True), 0.0)
+        self.assertEqual(h.agent.log.last_index(), 1)
+
+    def test_it_is_recorded_again_once_the_previous_one_commits(self):
+        """Not a permanent block: a genuine repeat after a commit still lands."""
+        h = Harness(1, self.config)
+        h.agent.self_events = []
+        h.agent.client_report(event_link(1, 2, True), 0.0)
+        h.agent.commit_index = h.agent.log.last_index()
+        h.agent.client_report(event_link(1, 2, True), 1.0)
+        self.assertEqual(h.agent.log.last_index(), 2)
+
+    def test_different_events_are_not_blocked_by_each_other(self):
+        """The guard is per event, not a global lock on self-reporting."""
+        h = Harness(1, self.config)
+        h.agent.self_events = []
+        h.agent.client_report(event_node(1, True), 0.0)
+        h.agent.client_report(event_link(1, 1, True), 0.0)
+        h.agent.client_report(event_link(1, 2, True), 0.0)
+        self.assertEqual(h.agent.log.last_index(), 3)
+
+    def test_the_whole_startup_sequence_lands_once_each(self):
+        """What the flood actually broke: three entries, not thousands."""
+        h = Harness(1, self.config)
+        for tick in range(100):
+            h.agent.client_tick(tick * 0.02)
+        self.assertEqual(h.agent.log.last_index(), 3)
+
+
 class SelfHealingTests(unittest.TestCase):
     """A node absent from the committed graph re-reports itself.
 
