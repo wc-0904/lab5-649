@@ -768,7 +768,54 @@ an edge, and edges are exactly a half period apart with no accumulation.
 | 8.2 | Hazard rates, 2 Hz normal and 4 Hz in failure mode | `lab_tasks.c` | Both rates in step across nodes |
 | 8.3 | Left, right, cancel from the wheel | `lab_tasks.c`, `cockpit.py` | Checkoff step 3 passes end to end |
 
-### P9. Election and time master handover, checkoff steps 6 and 8
+### P9. Election and time master handover, checkoff steps 6 and 8  [WRITTEN on the STM32, Pi side and bench pending]
+
+**D14 settled: a seeded generator, not hardware entropy.** Checkoff step 8 asks
+for "the seed that makes the Pi win", so the draw has to be a function of
+something the operator sets. `src/election.c` mixes the shared seed with the
+local node ID, so one value in `config/cluster.conf` gives each node a different
+series while every node still agrees what the seed was. Plain xorshift32 has poor
+low bits and the timeout takes a modulus, which reads exactly those, so the state
+is multiplied by an odd constant first. `tools/find_seed.py` searches for a seed
+whose first round elects a chosen node, with a `--margin` so the result survives
+a late heartbeat rather than being a tie. With the current config,
+`election_seed=6` gives cockpit 62 ms, steering 91, drivetrain 94.
+
+Written so far on the STM32:
+
+- Vote frames. `REQ_VOTE` carries the candidate's term plus its last log index
+  and term; the identifier says who is standing. The log fields implement Raft
+  5.4.1 and are what stop an election losing a committed entry, which is concrete
+  here: an isolated STM32 has a short log and electing it would drop link state
+  the cluster had agreed on. `VOTE` names the candidate it answers, because two
+  can stand in one term and a vote meant for one must not count towards the
+  other's majority. That exact class of bug cost a debugging round in P5.
+- `raft_election_tick()` from the monitor task, with a fresh draw every round so
+  two nodes that collide once do not collide on every retry.
+- `ELECTION_BASE_MS` is `SYNC_TIMEOUT_MS`, deliberately: the moment a node stops
+  believing it has a time master is the moment it should try to become one.
+- `raft_ref_tx()`, stamping this node's **global estimate** rather than its local
+  uptime. A new leader tracked the shared timeline while following, so continuing
+  to report it is what keeps the handover free of a step. Nothing is reset at the
+  handover, which is the whole mechanism checkoff step 6's 100 us bound rests on.
+- REF shares the 20 ms heartbeat slot and goes out first, since REF holds the
+  lowest identifier and winning arbitration is wasted if it is queued second.
+
+Three correctness points that only appear once a node can lead:
+
+- **A leader must not apply its own reference.** The two buses do not hear each
+  other directly, but a relay hop puts a leader's REF back on its other bus, and
+  `base = L + d` would add the delay again on every pass and run away.
+- **Indicators are driven from the role every 20 ms**, not at each transition.
+  Role changes now happen on five paths, and one that forgot an indicator would
+  leave LEADER lit on a node that had stepped down, which is exactly what
+  checkoff steps 6 and 8 read.
+- **A leader is its own time master**, so SYNC is lit for it by definition; it
+  receives no reference to keep the flag fresh.
+
+Still to do: the Pi's half of the election in `pi/demo/raft_agent.py`, the
+`LEADER=random` boot mode (**D13**), host tests for the state machine, and the
+bench work, which is where `LAB5_DELAY_STM32_US` stops being a guess.
 
 | # | Task | Where | Done when |
 |---|---|---|---|

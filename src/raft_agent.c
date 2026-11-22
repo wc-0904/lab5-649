@@ -8,6 +8,9 @@
 #include "cluster_config.h"
 #include "lab_can.h"
 #include "lab_io.h"
+#include "election.h"
+#include "time_sync.h"
+#include "pps.h"
 #include "time_sync.h"
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
@@ -39,6 +42,14 @@
  * SYNC goes out at the moment an election would start rather than lingering.
  */
 #define SYNC_TIMEOUT_MS (LAB5_CFG_MISSED_HEARTBEATS * LAB5_CFG_HEARTBEAT_MS)
+/** @brief Fixed part of the election timeout, milliseconds.
+ *
+ * The handout's formula is missed_heartbeats * heartbeat_ms + U(0, jitter), so
+ * 60 to 99 ms with the defaults. It is the same bound SYNC_TIMEOUT_MS uses,
+ * which is deliberate: the moment a node stops believing it has a time master
+ * is the moment it should start trying to become one.
+ */
+#define ELECTION_BASE_MS SYNC_TIMEOUT_MS
 /** @brief How long a link must look bad before it is reported down, milliseconds.
  *
  * A jumper pull is mechanically noisy and the controller crosses error passive
@@ -86,6 +97,15 @@ static struct {
 	uint16_t pending_request;
 	int64_t pending_sent_ms;
 	uint16_t next_request;
+	/* Election: see TASKS.md D13 and D14. */
+	uint32_t rng;
+	uint32_t timeout_ms;
+	/* Who this node voted for in the current term, or zero for nobody. */
+	int voted_for;
+	/* Bitmask of nodes that have granted this candidate a vote. */
+	uint8_t votes;
+	/* Last time anything was heard from a leader this node accepts. */
+	int64_t last_contact_ms;
 } state;
 static struct k_spinlock state_lock;
 
@@ -113,6 +133,17 @@ void raft_agent_init(void)
 		state.link_candidate[bus] = true;
 		state.link_changed_ms[bus] = 0;
 	}
+	election_seed(&state.rng, LAB5_CFG_ELECTION_SEED, LAB_NODE_ID);
+	state.timeout_ms = election_timeout_ms(&state.rng, ELECTION_BASE_MS,
+					       LAB5_CFG_JITTER_MS);
+	state.voted_for = 0;
+	state.votes = 0;
+	/*
+	 * Start the clock now rather than at zero, or the first monitor pass
+	 * would find the timeout already expired and call an election before
+	 * the transport has even come up.
+	 */
+	state.last_contact_ms = k_uptime_get();
 	k_spin_unlock(&state_lock, key);
 
 	lab_io_set(LAB_LEADER, state.role == RAFT_LEADER);
@@ -206,6 +237,15 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us, uint32_t local_cycles
 	struct lab5_ref ref = lab5_ref_decode(data);
 	int64_t now = k_uptime_get();
 	uint32_t gap = 0;
+	/*
+	 * A leader is its own time master and must never apply its own
+	 * reference. The two buses do not hear each other directly, but a relay
+	 * hop puts a leader's REF back on its other bus, and base = L + d would
+	 * then add the delay again on every pass and run away.
+	 */
+	if (raft_role() == RAFT_LEADER) {
+		return;
+	}
 	uint32_t missed;
 	bool report_gap = false;
 	bool restarted = false;
@@ -242,6 +282,16 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us, uint32_t local_cycles
 	first = !state.synced;
 	missed = state.missed;
 	state.last_ref_ms = now;
+	/*
+	 * A reference is contact from a live leader, so it holds the election
+	 * off. This is the link between Part 2's heartbeat and Part 8's
+	 * election: the moment references stop is the moment a node starts
+	 * trying to become the master itself.
+	 */
+	state.last_contact_ms = now;
+	if (state.role != RAFT_LEADER && state.leader == 0) {
+		state.leader = LAB5_CFG_DEFAULT_LEADER;
+	}
 	state.cycle = ref.cycle;
 	state.have_cycle = true;
 	state.synced = true;
@@ -287,27 +337,258 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us, uint32_t local_cycles
 	}
 }
 
+/** @brief Step down to follower in a newer term.
+ *
+ * Raft's one unconditional rule: any message carrying a higher term makes this
+ * node a follower in that term, whatever it was doing. Called with the lock
+ * held.
+ * @param term The newer term.
+ */
+static void adopt_term(uint32_t term)
+{
+	state.term = term;
+	state.role = RAFT_FOLLOWER;
+	state.leader = 0;
+	state.voted_for = 0;
+	state.votes = 0;
+}
+
+/** @brief Report whether a candidate's log is at least as current as ours.
+ *
+ * The up to date test from Raft section 5.4.1, and the reason an election
+ * cannot lose a committed entry: a candidate missing entries cannot gather a
+ * majority, because every node holding those entries refuses it. On this
+ * vehicle that is concrete. An STM32 that was isolated has a short log, and
+ * electing it would drop link state the rest of the cluster had agreed on.
+ * Called with the lock held.
+ * @param last_index Candidate's last log index.
+ * @param last_term Term of that entry.
+ * @return True when the candidate may be voted for.
+ */
+static bool log_is_current(uint16_t last_index, uint8_t last_term)
+{
+	uint32_t mine_index = raft_log_last_index(&state.log);
+	uint8_t mine_term = 0;
+
+	if (mine_index != 0 && !raft_log_term_at(&state.log, mine_index, &mine_term)) {
+		/* The entry has aged out of the ring; treat our log as unknown
+		 * rather than claim to be ahead on evidence we no longer hold.
+		 */
+		return true;
+	}
+	if (last_term != mine_term) {
+		return last_term > mine_term;
+	}
+	return last_index >= mine_index;
+}
+
+/** @brief Start an election if nothing has been heard from a leader.
+ *
+ * Called from the monitor task. The timeout is drawn fresh for every round
+ * rather than reused, because two nodes that collided once would otherwise
+ * collide again on every retry.
+ * @param now_ms Current uptime in milliseconds.
+ */
+void raft_election_tick(int64_t now_ms)
+{
+	struct lab5_vote_request request = {0};
+	uint8_t data[8];
+	uint32_t timeout = 0;
+	bool stand = false;
+
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+
+	if (state.role != RAFT_LEADER &&
+	    now_ms - state.last_contact_ms >= (int64_t)state.timeout_ms) {
+		state.term++;
+		state.role = RAFT_CANDIDATE;
+		state.leader = 0;
+		state.voted_for = LAB_NODE_ID;
+		/* A candidate votes for itself, which is the first of the majority. */
+		state.votes = (uint8_t)(1U << (LAB_NODE_ID - 1));
+		state.last_contact_ms = now_ms;
+		state.timeout_ms = election_timeout_ms(&state.rng, ELECTION_BASE_MS,
+						       LAB5_CFG_JITTER_MS);
+		request.term = (uint8_t)state.term;
+		request.last_index = (uint16_t)raft_log_last_index(&state.log);
+		(void)raft_log_term_at(&state.log, request.last_index,
+				       &request.last_term);
+		timeout = state.timeout_ms;
+		stand = true;
+	}
+	k_spin_unlock(&state_lock, key);
+
+	if (!stand) {
+		return;
+	}
+	lab5_vote_request_encode(data, &request);
+	lab_can_send_lab5(lab5_id_for(LAB5_REQ_VOTE_BASE, LAB_NODE_ID), data);
+	if (LAB5_CFG_DEBUG) {
+		printk("raft: standing term=%u last=%u/%u next timeout=%u ms\n",
+		       request.term, request.last_index, request.last_term, timeout);
+	}
+}
+
+/** @brief Answer a vote request.
+ * @param data Eight received bytes.
+ * @param from Node that sent it, taken from the identifier.
+ */
+void raft_on_vote_request(const uint8_t data[8], int from)
+{
+	struct lab5_vote_request request = lab5_vote_request_decode(data);
+	struct lab5_vote vote = {0};
+	uint8_t out[8];
+	bool current;
+
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+
+	if (request.term > state.term) {
+		adopt_term(request.term);
+	}
+	current = log_is_current(request.last_index, request.last_term);
+	vote.term = (uint8_t)state.term;
+	vote.candidate = (uint8_t)from;
+	vote.granted = request.term >= state.term && current &&
+		(state.voted_for == 0 || state.voted_for == from);
+	if (vote.granted) {
+		state.voted_for = from;
+		/*
+		 * Granting restarts the timer. Without this every node that
+		 * voted would stand itself a moment later and the term would
+		 * climb on every round without anyone winning.
+		 */
+		state.last_contact_ms = k_uptime_get();
+	}
+	k_spin_unlock(&state_lock, key);
+
+	lab5_vote_encode(out, &vote);
+	lab_can_send_lab5(lab5_id_for(LAB5_VOTE_BASE, LAB_NODE_ID), out);
+	if (LAB5_CFG_DEBUG) {
+		printk("raft: vote %s for %s term=%u\n",
+		       vote.granted ? "granted" : "refused", lab_node_name(from),
+		       request.term);
+	}
+}
+
+/** @brief Count a vote and take the leadership when a majority is reached.
+ * @param data Eight received bytes.
+ * @param from Node that voted, taken from the identifier.
+ */
+void raft_on_vote(const uint8_t data[8], int from)
+{
+	struct lab5_vote vote = lab5_vote_decode(data);
+	bool won = false;
+	uint32_t term = 0;
+	int count = 0;
+
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+
+	if (vote.term > state.term) {
+		adopt_term(vote.term);
+		k_spin_unlock(&state_lock, key);
+		return;
+	}
+	/*
+	 * Three tests, and each one has failed in a real system: the vote must
+	 * be for this term, it must be addressed to this candidate because two
+	 * can stand at once, and this node must still be standing.
+	 */
+	if (state.role == RAFT_CANDIDATE && vote.term == state.term &&
+	    vote.candidate == LAB_NODE_ID && vote.granted) {
+		state.votes |= (uint8_t)(1U << (from - 1));
+		for (int node = 0; node < LAB5_CFG_N; node++) {
+			count += (state.votes >> node) & 1U;
+		}
+		if (count >= LAB5_CFG_MAJORITY) {
+			state.role = RAFT_LEADER;
+			state.leader = LAB_NODE_ID;
+			state.last_contact_ms = k_uptime_get();
+			won = true;
+			term = state.term;
+		}
+	}
+	k_spin_unlock(&state_lock, key);
+
+	if (!won) {
+		return;
+	}
+	/*
+	 * The time master moves with the leadership. Nothing is reset here: the
+	 * global estimate this node has been maintaining all along is what it
+	 * now stamps into REF, which is why the handover does not step the
+	 * timeline. See TASKS.md, settled decisions.
+	 */
+	if (LAB5_CFG_DEBUG) {
+		printk("raft: LEADER term=%u with %d of %d votes\n", term, count,
+		       LAB5_CFG_N);
+	}
+}
+
+/** @brief Stamp and send one reference frame. Leader only.
+ *
+ * The clock stamped here is this node's global estimate, not its local uptime.
+ * A new leader has been tracking the shared timeline as a follower, so
+ * continuing to report it is what keeps the handover free of a step; checkoff
+ * step 6 allows no more than 100 microseconds.
+ * @return True when a frame was sent.
+ */
+bool raft_ref_tx(void)
+{
+	static uint16_t cycle;
+	uint8_t data[8];
+	uint64_t master_us;
+
+	if (raft_role() != RAFT_LEADER) {
+		return false;
+	}
+	master_us = time_sync_global_us(pps_now());
+	if (master_us == 0) {
+		/* Never synchronized: fall back to local time so the cluster
+		 * still gets a timeline, just not a continuous one.
+		 */
+		master_us = LAB5_EPOCH_US + (uint64_t)k_uptime_get() * 1000U;
+	}
+	lab5_ref_encode(data, master_us, cycle++);
+	lab_can_send_lab5(LAB5_REF, data);
+	return true;
+}
+
 /** @brief Age out the time master when references stop arriving.
  * @param now_ms Current uptime in milliseconds.
  */
 void raft_agent_tick(int64_t now_ms)
 {
 	bool lost = false;
+	bool leading;
+	bool synced;
 
 	k_spinlock_key_t key = k_spin_lock(&state_lock);
 
-	if (state.synced && now_ms - state.last_ref_ms >= SYNC_TIMEOUT_MS) {
+	if (state.synced && state.role != RAFT_LEADER &&
+	    now_ms - state.last_ref_ms >= SYNC_TIMEOUT_MS) {
 		state.synced = false;
 		/* Keep the counter: the next REF is a new master, not a gap. */
 		state.have_cycle = false;
 		lost = true;
 	}
+	leading = state.role == RAFT_LEADER;
+	synced = state.synced;
 	k_spin_unlock(&state_lock, key);
 
+	/*
+	 * Drive both indicators from the role on every pass rather than at each
+	 * transition. Role changes happen on five different paths now, and one
+	 * that forgot an indicator would leave LEADER lit on a node that had
+	 * stepped down, which is exactly what checkoff steps 6 and 8 read.
+	 *
+	 * A leader is its own time master, so SYNC is lit for it by definition;
+	 * it receives no reference to keep the flag fresh.
+	 */
+	lab_io_set(LAB_LEADER, leading);
+	lab_io_set(LAB_SYNC, leading || synced);
 	if (!lost) {
 		return;
 	}
-	lab_io_set(LAB_SYNC, false);
 	if (LAB5_CFG_DEBUG) {
 		printk("raft: lost SYNC, no REF for %d ms\n", SYNC_TIMEOUT_MS);
 	}
@@ -332,9 +613,15 @@ void raft_on_append(const uint8_t data[8])
 
 	/* A newer term means a new leader; adopt it and follow. */
 	if (header.term > state.term) {
-		state.term = header.term;
+		adopt_term(header.term);
+	} else if (header.term == state.term && state.role == RAFT_CANDIDATE) {
+		/* Someone else won this term. Stop standing. */
 		state.role = RAFT_FOLLOWER;
-		state.leader = 0;
+		state.votes = 0;
+	}
+	/* Contact from a leader at or above our term holds the election off. */
+	if (header.term >= state.term) {
+		state.last_contact_ms = k_uptime_get();
 	}
 	uint32_t before = raft_log_last_index(&state.log);
 

@@ -231,7 +231,24 @@ static void dispatch_task(void *a, void *b, void *c)
 			continue;
 		}
 		if (lab5_is_consensus(id)) {
-			/* Acks and votes belong to other nodes or later phases. */
+			/*
+			 * Votes are addressed by sender, so the identifier
+			 * carries who is standing or who answered. Everything
+			 * else in the range belongs to another node.
+			 */
+			for (int node = 1; node <= LAB5_CFG_N; node++) {
+				if (node == LAB_NODE_ID) {
+					continue;
+				}
+				if (id == lab5_id_for(LAB5_REQ_VOTE_BASE, node)) {
+					raft_on_vote_request(rx.frame.data, node);
+					break;
+				}
+				if (id == lab5_id_for(LAB5_VOTE_BASE, node)) {
+					raft_on_vote(rx.frame.data, node);
+					break;
+				}
+			}
 			finish(DISPATCH, start);
 			continue;
 		}
@@ -631,6 +648,15 @@ static void tx_task(void *a, void *b, void *c)
 			uint8_t data[8] = {0};
 			if (id == HEARTBEAT) {
 
+				/*
+				 * REF shares this 20 ms slot because Part 2
+				 * gives the reference and the heartbeat the
+				 * same period. It goes first: REF holds the
+				 * lowest identifier in the catalog and winning
+				 * arbitration is wasted if it is queued behind
+				 * a frame already behind the heartbeat.
+				 */
+				(void)raft_ref_tx();
 				data[1] = s.error;
 				data[2] = (!s.degraded[0]) | ((!s.degraded[1]) << 1);
 				lab_can_send(LAB_HB1 + LAB_NODE_ID - 1, data);
@@ -672,6 +698,7 @@ static void monitor_task(void *a, void *b, void *c)
 
 		/* SYNC tracks liveness, so it has to age out here, not only on RX. */
 		raft_agent_tick(now);
+		raft_election_tick(now);
 		raft_client_poll(now);
 		k_spinlock_key_t key = k_spin_lock(&state_lock);
 		bool error = state.local_fail || !state.have_ctrl || now - state.ctrl_at >= 60;

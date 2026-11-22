@@ -97,6 +97,31 @@ uint32_t raft_commit_index(void);
  * @return True when a REF has been received.
  */
 bool raft_last_ref(struct lab5_ref *ref, uint64_t *local_us);
+/** @brief Start an election if nothing has been heard from a leader.
+ *
+ * Called from the monitor task. A fresh timeout is drawn for every round, so
+ * two nodes that collided once do not collide again on every retry.
+ * @param now_ms Current uptime in milliseconds.
+ */
+void raft_election_tick(int64_t now_ms);
+/** @brief Answer a vote request.
+ * @param data Eight received bytes.
+ * @param from Node that sent it, taken from the identifier.
+ */
+void raft_on_vote_request(const uint8_t data[8], int from);
+/** @brief Count a vote and take the leadership when a majority is reached.
+ * @param data Eight received bytes.
+ * @param from Node that voted, taken from the identifier.
+ */
+void raft_on_vote(const uint8_t data[8], int from);
+/** @brief Stamp and send one reference frame. Leader only.
+ *
+ * The clock stamped is this node's global estimate, not its local uptime. A
+ * new leader tracked the shared timeline while it was a follower, so
+ * continuing to report that is what keeps the handover free of a step.
+ * @return True when a frame was sent.
+ */
+bool raft_ref_tx(void);
 /** @brief Count REF frames missed, detected as cycle counter gaps.
  * @return Missed reference count since boot.
  */
