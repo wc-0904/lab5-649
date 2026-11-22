@@ -453,6 +453,9 @@ class SelfReportTests(unittest.TestCase):
         h = self.agent()
         for tick in range(4):
             h.agent.client_tick(tick)
+            # A self-report waits for the previous one to commit, so stand in
+            # for the follower that acknowledges it.
+            h.agent.commit_index = h.agent.log.last_index()
         self.assertEqual(h.agent.self_events, [])
         self.assertEqual(h.agent.log.last_index(), 3)
 
@@ -517,6 +520,7 @@ class SelfReportTests(unittest.TestCase):
         h = self.agent()
         for tick in range(4):
             h.agent.client_tick(tick)
+            h.agent.commit_index = h.agent.log.last_index()
         self.assertEqual(h.agent.self_events, [])
         h.agent.on_append(append_encode(9, 0, 0, 0))
         self.assertEqual(len(h.agent.self_events), 3)
@@ -619,6 +623,7 @@ class PendingRequestOnPromotionTests(unittest.TestCase):
         h.agent.leader = 2
         for tick in range(1, 6):
             h.agent.client_tick(tick)
+            h.agent.commit_index = h.agent.log.last_index()
         self.assertEqual(h.agent.self_events, [])
         self.assertEqual(h.agent.log.last_index(), 3)
 

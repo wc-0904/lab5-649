@@ -357,10 +357,10 @@ class RaftAgent:
         self.link_candidate = [False, False]
         self.link_changed = [0.0, 0.0]
         self.link_event = None
-        # Events this node appended for itself while leading, and where. An
-        # entry still above the commit index is in flight and must not be
-        # appended a second time.
-        self.self_appended = {}
+        # Where this node last recorded a report for itself while leading. One
+        # still above the commit index is in flight, and no further
+        # self-report is made until it lands.
+        self.self_index = 0
         # Cockpit liveness, which only the leader records.
         self.cockpit_known = False
         self.cockpit_alive = False
@@ -495,9 +495,8 @@ class RaftAgent:
         self.adopt_master_role()
         self.next_index = {peer: self.log.last_index() + 1 for peer in self.peers}
         self.match_index = {peer: 0 for peer in self.peers}
-        # A new leader's log is its own; nothing it recorded before is in
-        # flight any more.
-        self.self_appended = {}
+        # A new leader's log is its own; nothing recorded before is in flight.
+        self.self_index = 0
         if self.config["Debug"]:
             print("raft: LEADER term=%d with %d of %d votes"
                   % (self.term, len(self.votes), self.config["N"]), flush=True)
@@ -882,12 +881,16 @@ class RaftAgent:
             # a guard here the self-healing check re-reports on every pass
             # while the commit catches up, and the log grows without bound: on
             # the bench that reached index 3852 of one repeated entry.
-            in_flight = self.self_appended.get(event)
-            if in_flight is not None and in_flight > self.commit_index:
-                return True
+            # One self-report at a time, each waiting for the previous to
+            # commit. Remembering only the last event is not enough: a node
+            # cycles through three self-reports, its node and its two links,
+            # so each new one would free the previous and the cycle would run
+            # unguarded.
+            if self.self_index > self.commit_index:
+                return False
             index = self.client_append(event)
             if index is not None:
-                self.self_appended[event] = index
+                self.self_index = index
             return True
         if self.pending_event is not None:
             return False

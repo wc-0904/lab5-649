@@ -352,20 +352,31 @@ class SelfReportFloodTests(unittest.TestCase):
         h.agent.client_report(event_link(1, 2, True), 1.0)
         self.assertEqual(h.agent.log.last_index(), 2)
 
-    def test_different_events_are_not_blocked_by_each_other(self):
-        """The guard is per event, not a global lock on self-reporting."""
+    def test_reports_are_serialised_one_per_commit(self):
+        """Remembering only the last event is not enough.
+
+        A node cycles through three self-reports, its node and its two links,
+        so a per-event guard frees the previous one each time and the cycle
+        runs unguarded. Serialising on the index covers all three with one
+        slot, at the cost of one commit each.
+        """
         h = Harness(1, self.config)
         h.agent.self_events = []
         h.agent.client_report(event_node(1, True), 0.0)
         h.agent.client_report(event_link(1, 1, True), 0.0)
-        h.agent.client_report(event_link(1, 2, True), 0.0)
-        self.assertEqual(h.agent.log.last_index(), 3)
+        self.assertEqual(h.agent.log.last_index(), 1)
+        # The follower acknowledges, so the next one may go.
+        h.agent.commit_index = h.agent.log.last_index()
+        h.agent.client_report(event_link(1, 1, True), 0.1)
+        self.assertEqual(h.agent.log.last_index(), 2)
 
     def test_the_whole_startup_sequence_lands_once_each(self):
         """What the flood actually broke: three entries, not thousands."""
         h = Harness(1, self.config)
         for tick in range(100):
             h.agent.client_tick(tick * 0.02)
+            # Stand in for a follower acknowledging each entry.
+            h.agent.commit_index = h.agent.log.last_index()
         self.assertEqual(h.agent.log.last_index(), 3)
 
 
