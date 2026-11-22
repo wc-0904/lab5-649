@@ -357,6 +357,22 @@ void lab_can_link_state(int bus, int *state, int *tx_errors, int *rx_errors)
 	*rx_errors = errors.rx_err_cnt;
 }
 
+/** @brief Check RX freshness without subtracting a newer timestamp from old uptime. */
+static bool received_within(int bus, uint32_t window_ms)
+{
+	if (!atomic_get(&heard[bus])) {
+		return false;
+	}
+	/* RX runs at higher priority. Snapshot its timestamp before reading now:
+	 * the opposite order can wrap the age to UINT32_MAX after preemption.
+	 * Separate statements also fix the evaluation order for link-health reads.
+	 */
+	uint32_t received = (uint32_t)atomic_get(&last_rx_ms[bus]);
+	uint32_t now = k_uptime_get_32();
+
+	return now - received < window_ms;
+}
+
 bool lab_can_link_healthy(int bus)
 {
 	/*
@@ -375,21 +391,16 @@ bool lab_can_link_healthy(int bus)
 	 * Hearing a frame is decisive in both directions and is what the Pi has
 	 * always used: every live node heartbeats on both buses every 20 ms.
 	 */
-	if (bus < 0 || bus > 1 || !atomic_get(&buses[bus].started) || !atomic_get(&heard[bus])) {
+	if (bus < 0 || bus > 1 || !atomic_get(&buses[bus].started)) {
 		return false;
 	}
-	uint32_t age = k_uptime_get_32() - (uint32_t)atomic_get(&last_rx_ms[bus]);
-
-	return age < LAB_LINK_SILENCE_MS;
+	return received_within(bus, LAB_LINK_SILENCE_MS);
 }
 
 bool lab_can_heard_within(uint32_t window_ms)
 {
-	uint32_t now = k_uptime_get_32();
-
 	for (int bus = 0; bus < 2; bus++) {
-		if (atomic_get(&heard[bus]) &&
-		    now - (uint32_t)atomic_get(&last_rx_ms[bus]) < window_ms) {
+		if (received_within(bus, window_ms)) {
 			return true;
 		}
 	}

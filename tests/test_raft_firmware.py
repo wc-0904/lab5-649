@@ -100,6 +100,39 @@ int main(void)
     assert(state.next_index[3] == 2);
 
     reset();
+    state.role = RAFT_FOLLOWER;
+    state.self_reported = true;
+    state.pending_event = raft_event_link(LAB_NODE_ID, 2, true);
+    state.link_down[0] = state.link_down[1] = false;
+    raft_log_append(&state.log, 1, raft_event_node(LAB_NODE_ID, true));
+    network_add_node(&state.net, LAB_NODE_ID);
+    state.commit_index = 1;
+    append = (struct lab5_append){.term=1, .prev_index=1, .prev_term=1,
+        .commit=2, .count=1, .entry_term=1, .event=raft_event_node(LAB_NODE_ID, false)};
+    lab5_append_encode(data, &append);
+    raft_on_append(data);
+    assert(!state.self_reported && state.pending_event == RAFT_EVENT_NONE);
+    assert(state.link_down[0] && state.link_down[1]);
+    raft_client_poll(1000);
+    assert(state.pending_event == raft_event_node(LAB_NODE_ID, true));
+    uint16_t repair_request = state.pending_request;
+    append.prev_index = 2; append.commit = 3; append.event = raft_event_node(3, true);
+    lab5_append_encode(data, &append);
+    raft_on_append(data);
+    assert(state.pending_request == repair_request);
+    assert(state.pending_event == raft_event_node(LAB_NODE_ID, true));
+
+    reset();
+    state.role = RAFT_FOLLOWER;
+    state.self_reported = true;
+    raft_log_append(&state.log, 1, raft_event_node(LAB_NODE_ID, false));
+    raft_log_append(&state.log, 1, raft_event_node(LAB_NODE_ID, true));
+    append = (struct lab5_append){.term=1, .prev_index=2, .prev_term=1, .commit=2};
+    lab5_append_encode(data, &append);
+    raft_on_append(data);
+    assert(state.self_reported && state.pending_event == RAFT_EVENT_NONE);
+
+    reset();
     time_sync_assume_master(1000000, 1000);
     assert(time_sync_global_us(900) == 999900);
     for (uint64_t t=1000000; t<5000000000ULL; t+=1000000) {

@@ -599,8 +599,10 @@ class RaftAgent:
             # Commit no further than what we actually hold.
             target = min(header["commit"], match)
             if target > self.commit_index:
+                before = self.commit_index
                 self.commit_index = target
                 self.net.replay(self.log, self.commit_index)
+                self.repair_self_presence(before)
                 self.show_new_entries()
                 if self.config["Debug"]:
                     # The same line the firmware prints, so the three consoles
@@ -877,6 +879,29 @@ class RaftAgent:
                       % (self.displayed, entry[0], event_name(entry[1]), mark),
                       flush=True)
 
+    def repair_self_presence(self, previous_commit):
+        """Reannounce after our removal commits, even if local RX never stopped.
+
+        Hearing peers is not proof that the leader heard us. Repair only on a
+        newly committed removal, not on every poll of an incomplete graph.
+        """
+        if self.net.node_up(self.node_id):
+            return
+        removed = any(self.log.get(index)[1] == event_node(self.node_id, False)
+                      for index in range(previous_commit + 1, self.commit_index + 1))
+        if not removed:
+            return
+        self.self_events = [event_node(self.node_id, True)]
+        self.pending_event = None
+        self.link_event = None
+        self.self_index = 0
+        self.link_down = [True, True]
+        self.link_candidate = [True, True]
+        self.link_changed = [time.monotonic()] * 2
+        if self.config["Debug"]:
+            print("raft: own NODE_DOWN committed; re-reporting presence and observed links",
+                  flush=True)
+
     def refill_self_reports(self):
         """Queue this node's own existence and links for reporting.
 
@@ -946,7 +971,7 @@ class RaftAgent:
                 continue
             # A node carries one request at a time, so leave the change
             # unrecorded until there is room; the next pass will retry.
-            if self.pending_event is not None:
+            if self.pending_event is not None or self.link_event is not None:
                 continue
             self.link_down[bus] = down
             return event_link(self.node_id, bus + 1, not down)
@@ -1166,6 +1191,7 @@ class RaftAgent:
         if self.commit_index == before:
             return False
         self.net.replay(self.log, self.commit_index)
+        self.repair_self_presence(before)
         self.committed = self.commit_index
         if self.config["Debug"]:
             print("raft: commit idx=%d %s" % (self.commit_index, self.net.render()),

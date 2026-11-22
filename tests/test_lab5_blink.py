@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "pi" / "demo"))
 
-from cockpit import BLINK_HALF_US
+from cockpit import BLINK_HALF_US, HAZARD_HALF_US, Cockpit
 
 #: Half period of the failure mode hazard, microseconds. Must match
 #: HAZARD_FAST_HALF_US in src/lab_tasks.c.
@@ -50,9 +50,10 @@ class BlinkPhaseTests(unittest.TestCase):
         self.assertEqual(SECOND_US % BLINK_HALF_US, 0)
         self.assertEqual(SECOND_US % HAZARD_FAST_HALF_US, 0)
 
-    def test_rates_are_two_and_four_hertz(self):
-        """2 Hz normal, 4 Hz once the cockpit is gone, per checkoff steps 6 and 7."""
-        self.assertEqual(SECOND_US // (2 * BLINK_HALF_US), 2)
+    def test_rates_are_one_two_and_four_hertz(self):
+        """Normal blinkers are 1 Hz; error and cockpit-failure hazards are 2/4 Hz."""
+        self.assertEqual(SECOND_US // (2 * BLINK_HALF_US), 1)
+        self.assertEqual(SECOND_US // (2 * HAZARD_HALF_US), 2)
         self.assertEqual(SECOND_US // (2 * HAZARD_FAST_HALF_US), 4)
 
     def test_phase_is_low_at_every_whole_second(self):
@@ -111,9 +112,28 @@ class BlinkPhaseTests(unittest.TestCase):
 class CockpitPhaseTests(unittest.TestCase):
     """The Pi divides the same timeline, so its view cannot drift from a node's."""
 
+    def test_cockpit_selects_normal_and_error_periods(self):
+        from unittest.mock import Mock
+        app = Cockpit.__new__(Cockpit)
+        app.agent = Mock()
+        app.agent.global_us.return_value = 300000
+        app.error = False
+        self.assertFalse(app.blink_phase())
+        app.error = True
+        self.assertTrue(app.blink_phase())
+
+    def test_firmware_has_three_distinct_periods(self):
+        import re
+        source = (ROOT / "src/lab_tasks.c").read_text()
+        for name, value in (("BLINK_HALF_US", 500000),
+                            ("HAZARD_HALF_US", 250000),
+                            ("HAZARD_FAST_HALF_US", 125000)):
+            match = re.search(r"#define " + name + r" (\d+)U", source)
+            self.assertEqual(int(match.group(1)), value)
+
     def test_cockpit_half_period_matches_the_firmware(self):
         """A mismatch here would show as the Pi's candump disagreeing with the lamps."""
-        self.assertEqual(BLINK_HALF_US, 250000)
+        self.assertEqual(BLINK_HALF_US, 500000)
 
 
 if __name__ == "__main__":

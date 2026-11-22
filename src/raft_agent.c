@@ -530,6 +530,34 @@ static void become_leader(void)
 	state.self_index = 0;
 }
 
+/** @brief Apply a new committed prefix and repair a committed local removal.
+ * Called with state_lock held. A local receive stream can remain healthy while
+ * the leader cannot hear this node, so isolation detection alone is insufficient.
+ */
+static void apply_committed(uint32_t before, uint32_t through)
+{
+	bool removed = false;
+
+	for (uint32_t index = before + 1; index <= through; index++) {
+		struct raft_entry entry;
+
+		if (raft_log_get(&state.log, index, &entry)) {
+			network_apply(&state.net, entry.event);
+			removed |= entry.event == raft_event_node(LAB_NODE_ID, false);
+		}
+	}
+	if (removed && !network_node_up(&state.net, LAB_NODE_ID)) {
+		state.self_reported = false;
+		state.pending_event = RAFT_EVENT_NONE;
+		state.self_index = 0;
+		for (int bus = 0; bus < 2; bus++) {
+			state.link_down[bus] = true;
+			state.link_candidate[bus] = true;
+			state.link_changed_ms[bus] = k_uptime_get();
+		}
+	}
+}
+
 /** @brief Commit the highest index a majority has stored, in the leader's term.
  *
  * Raft only commits an entry from the leader's own term by counting replicas,
@@ -563,13 +591,7 @@ static bool advance_commit(void)
 	if (state.commit_index == before) {
 		return false;
 	}
-	for (uint32_t index = before + 1; index <= state.commit_index; index++) {
-		struct raft_entry entry;
-
-		if (raft_log_get(&state.log, index, &entry)) {
-			network_apply(&state.net, entry.event);
-		}
-	}
+	apply_committed(before, state.commit_index);
 	return true;
 }
 
@@ -1230,13 +1252,7 @@ void raft_on_append(const uint8_t data[8])
 		uint32_t target = header.commit < limit ? header.commit : limit;
 
 		if (target > state.commit_index) {
-			for (uint32_t index = state.commit_index + 1; index <= target; index++) {
-				struct raft_entry entry;
-
-				if (raft_log_get(&state.log, index, &entry)) {
-					network_apply(&state.net, entry.event);
-				}
-			}
+			apply_committed(state.commit_index, target);
 			state.commit_index = target;
 			advanced = true;
 		}

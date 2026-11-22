@@ -506,13 +506,10 @@ static void output_task(void *a, void *b, void *c)
 	}
 }
 
-/** @brief Half period of the normal blinker, microseconds.
- *
- * 2 Hz means the lamp completes two on-off cycles a second, so the period is
- * 500 ms and an edge falls every 250 ms. Lab 3's LAB_BLINK_MS of 500 is the
- * same figure expressed as a period.
- */
-#define BLINK_HALF_US 250000U
+/** @brief Normal blink: 500 ms on and 500 ms off (1 Hz). */
+#define BLINK_HALF_US 500000U
+/** @brief Error hazards with cockpit alive: 250 ms on/off (2 Hz). */
+#define HAZARD_HALF_US 250000U
 /** @brief Half period of the failure mode hazard, microseconds.
  *
  * 4 Hz, which checkoff step 6 asks for once the cockpit is gone. The rate is
@@ -593,8 +590,9 @@ static void blink_task(void *a, void *b, void *c)
 		 * is recorded by COCKPIT_ERROR. Leadership alone says nothing
 		 * about cockpit liveness when booting with a random leader.
 		 */
-		uint32_t half_us = (s.error && raft_failure_mode()) ?
-			HAZARD_FAST_HALF_US : BLINK_HALF_US;
+		uint32_t half_us = s.error ?
+			(raft_failure_mode() ? HAZARD_FAST_HALF_US : HAZARD_HALF_US) :
+			BLINK_HALF_US;
 		bool phase = blink_phase(clock_us, half_us);
 
 		while (k_msgq_get(&blink_queue, value, K_NO_WAIT) == 0) {

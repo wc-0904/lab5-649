@@ -48,10 +48,10 @@ def catalog_filters():
     return b"".join(struct.pack("=II", can_id, mask) for can_id, mask in exact)
 
 
-#: Half period of the normal blinker, microseconds. 2 Hz means two full on-off
-#: cycles a second, so an edge every 250 ms. Must match BLINK_HALF_US in
-#: src/lab_tasks.c; the two endpoints divide the same timeline.
-BLINK_HALF_US = 250000
+#: Normal blinkers use 500 ms on/off; error hazards use 250 ms on/off.
+#: Must match the firmware's BLINK_HALF_US and HAZARD_HALF_US.
+BLINK_HALF_US = 500000
+HAZARD_HALF_US = 250000
 
 
 class Pins:
@@ -464,11 +464,12 @@ class Cockpit:
         Must match blink_phase() in src/lab_tasks.c: the same division of the
         same timeline, so the Pi's view of the phase and a node's cannot drift
         apart. Hazards run fast only when the cockpit itself is gone, which
-        cannot be true here, so this node always uses the 2 Hz half period.
+        cannot be true here, so error hazards here use 2 Hz; normal blinkers use 1 Hz.
 
         :return: True for the lit half of the cycle.
         """
-        return (self.agent.global_us() // BLINK_HALF_US) % 2 == 1
+        half_us = HAZARD_HALF_US if self.error else BLINK_HALF_US
+        return (self.agent.global_us() // half_us) % 2 == 1
 
     def pps_report(self, global_us, local_us, error_us):
         """Print the measured global and local clocks for each PPS edge."""

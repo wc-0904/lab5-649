@@ -218,3 +218,42 @@ setup_can.py during a fault/recovery measurement: it resets the controllers.
 
 The next deliverable is measured evidence and any resulting corrections. Only then should
 scope screenshots and the submission report be finalized.
+
+## Bench follow-up: Pi bus-B recovery
+
+The single-link bench test exposed a stale graph after reconnect and repeated drivetrain
+NODE_UP entries. Two recovery defects were reproduced in host tests and corrected:
+
+- Pi link polling could replace `link_event` while a previous report waited behind a
+  self-report or uncommitted leader write. It now retains that report and leaves the
+  second change pending detection until the slot is free.
+- A live node could remain absent after its NODE_DOWN committed, because it only reset
+  its presence reports on locally detected isolation or some leadership changes.
+  Both firmware and Pi now reannounce after a newly committed local removal, followed
+  by reports for the links they actually hear. Unrelated commits do not restart this
+  repair, and a batch ending with the node already UP does not trigger another NODE_UP.
+
+Validation: 250 host tests pass, including actual C-agent removal/rejoin tests and a Pi
+scenario that queues both recovered links while waiting for replication. Both Nucleo
+images rebuild successfully. These tests reproduce the software defects; they do not
+establish the cause of the original receive interruption. Repeated drivetrain NODE_UP
+at one term still needs the drivetrain serial console to distinguish reboot from local
+isolation. Capture boot banners, `raft: isolated`, and local-failure lines if it recurs.
+
+## Bench follow-up: false isolation from RX timestamp preemption
+
+An N3 console capture showed `raft: isolated` followed by a new NODE_UP request while
+PPS edge numbers and the local timer continued uninterrupted. In `lab_can_heard_within`,
+uptime was sampled before reading the atomic last-RX timestamps. Higher-priority CAN
+workers could preempt that reader and publish newer timestamps on both buses. Unsigned
+subtraction then yielded an apparent age near UINT32_MAX, falsely exceeding the 600 ms
+isolation threshold. `lab_can_link_healthy` had the same evaluation-order risk.
+
+Both checks now read the receive timestamp before sampling uptime, using separate
+statements. A host test compiles the production health-check functions and injects RX
+updates immediately after the clock sample. It fails on the former implementation and
+passes with this change; genuine silence, one surviving bus, unseen buses and ordinary
+uptime wrap are also checked. All 251 tests pass and both firmware targets build. This
+is a confirmed false-isolation mechanism; physical bench retesting is still required to
+establish whether it explains every observed outage. No Pi or wire-format change is
+needed for this particular fix.
