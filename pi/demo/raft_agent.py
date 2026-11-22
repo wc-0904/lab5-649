@@ -84,6 +84,10 @@ def append_encode(term, prev_index, prev_term, commit, count=0, entry_term=0,
                        commit & APPEND_INDEX_MAX, entry_term & 0xFF, event & 0xFF)
 
 
+#: How long to wait before resending an unanswered client request, seconds.
+#: Must match CLIENT_RETRY_MS in src/raft_agent.c.
+CLIENT_RETRY = 0.200
+
 #: Largest log index the AppendEntries header can carry. Must match
 #: LAB5_APPEND_INDEX_MAX in include/lab_protocol.h.
 APPEND_INDEX_MAX = 0x7FFF
@@ -329,6 +333,13 @@ class RaftAgent:
         self.votes = set()
         self.last_contact = time.monotonic()
         self.elections = 0
+        # Client side: one request in flight at a time, retried until answered.
+        self.pending_event = None
+        self.pending_request = 0
+        self.pending_sent = 0.0
+        self.next_request = 0
+        self.self_events = []
+        self.refill_self_reports()
 
     def draw_timeout(self):
         """Draw an election timeout in seconds.
@@ -486,6 +497,11 @@ class RaftAgent:
             was_leader = self.is_leader()
             self.adopt_term(header["term"])
             stepped_down = was_leader
+            if was_leader:
+                # Whatever this node appended while it led is not safe: the new
+                # leader's log wins. Report itself again through that leader.
+                self.refill_self_reports()
+                self.pending_event = None
         elif header["term"] == self.term and self.role == CANDIDATE:
             # Someone else won this term. Stop standing.
             self.role = FOLLOWER
@@ -656,6 +672,89 @@ class RaftAgent:
             print("raft: append idx=%d term=%d %s"
                   % (index, self.term, event_name(event)), flush=True)
         return index
+
+    def refill_self_reports(self):
+        """Queue this node's own existence and links for reporting.
+
+        Called at boot and again whenever this node stops leading. A node that
+        appended its own entries while it led cannot assume they survived: a
+        new leader's log wins, and anything this node wrote under an older term
+        is overwritten. Re-reporting is how it gets back into the graph, and it
+        is free when nothing changed because the leader answers a repeated
+        request without appending a second copy.
+        """
+        self.self_events = [event_node(self.node_id, True)]
+        self.self_events += [event_link(self.node_id, bus, True) for bus in (1, 2)]
+
+    def client_tick(self, now):
+        """Drive this node's own reports and retry an unanswered one.
+
+        :param now: Monotonic time from the caller's loop.
+        """
+        if self.pending_event is not None:
+            self.client_poll(now)
+            return
+        if self.self_events and self.client_report(self.self_events[0], now):
+            self.self_events.pop(0)
+
+    def client_report(self, event, now):
+        """Record an event, through the leader when that is someone else.
+
+        client_append() only works while this node leads, so as a follower the
+        cockpit's own NODE_cockpit_UP never reached the log at all. A node has
+        to be able to report itself to whoever is currently leading, which is
+        steps 1 and 6 of the handout's write path from the client's side.
+
+        :param event: Encoded event to record.
+        :param now: Monotonic time from the caller's loop.
+        :return: True when the event was taken, false when one is already in
+            flight and the caller should try again.
+        """
+        if self.is_leader():
+            self.client_append(event)
+            return True
+        if self.pending_event is not None:
+            return False
+        self.next_request = (self.next_request + 1) & 0xFFFF
+        self.pending_event = event
+        self.pending_request = self.next_request
+        self.pending_sent = now
+        self.send(lab5_id_for(CLIENT_REQ_BASE, self.node_id),
+                  client_encode(event, self.pending_request))
+        return True
+
+    def client_poll(self, now):
+        """Resend an unanswered client request.
+
+        The leader may have changed, or the frame may have been lost on both
+        buses at once. Retrying costs nothing, because the leader remembers the
+        last request it answered per node and replies again rather than
+        appending a second copy.
+
+        :param now: Monotonic time from the caller's loop.
+        """
+        if self.pending_event is None or self.is_leader():
+            return
+        if now - self.pending_sent < CLIENT_RETRY:
+            return
+        self.pending_sent = now
+        self.send(lab5_id_for(CLIENT_REQ_BASE, self.node_id),
+                  client_encode(self.pending_event, self.pending_request))
+
+    def on_reply(self, data):
+        """Apply the leader's answer to one of this node's client requests.
+
+        :param data: Eight received bytes.
+        """
+        reply = reply_decode(data)
+        if reply["node"] != self.node_id or reply["request"] != self.pending_request:
+            # Addressed to another client, or to a request already settled.
+            return
+        if reply["result"] == REPLY_COMMITTED:
+            self.pending_event = None
+        elif reply["leader"]:
+            # Redirected: remember who leads and let the retry go there.
+            self.leader = reply["leader"]
 
     def on_client_request(self, node, data):
         """Steps 1, 2 and 6 of Figure 2, or the redirect when not leading.

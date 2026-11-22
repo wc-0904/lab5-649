@@ -98,6 +98,7 @@ static struct {
 	struct network net;
 	uint32_t commit_index;
 	/* Client: this node's own view of its two links. */
+	bool self_reported;
 	bool link_down[2];
 	bool link_candidate[2];
 	int64_t link_changed_ms[2];
@@ -158,6 +159,7 @@ void raft_agent_init(void)
 	 * reported changes would leave its own links missing from the graph until
 	 * someone moved a jumper. The leader bootstraps its own links the same way.
 	 */
+	state.self_reported = false;
 	for (int bus = 0; bus < 2; bus++) {
 		state.link_down[bus] = true;
 		state.link_candidate[bus] = true;
@@ -1022,7 +1024,23 @@ void raft_client_poll(int64_t now_ms)
 
 	k_spinlock_key_t key = k_spin_lock(&state_lock);
 
-	for (int bus = 0; bus < 2; bus++) {
+	/*
+	 * This node's own existence, reported before its links. D15 says the
+	 * owner reports its own links; the same argument applies to the node
+	 * itself, and nothing else can do it: node-up entries used to come only
+	 * from the cockpit appending them directly while it led, so under any
+	 * other leader no node was ever marked up. A link whose node is not up
+	 * does not render, by design, so the whole graph stayed empty.
+	 */
+	if (!state.self_reported && state.pending_event == RAFT_EVENT_NONE) {
+		state.self_reported = true;
+		state.pending_event = raft_event_node(LAB_NODE_ID, true);
+		state.pending_request = ++state.next_request;
+		state.pending_sent_ms = now_ms;
+		event = state.pending_event;
+		request = state.pending_request;
+	}
+	for (int bus = 0; bus < 2 && event == RAFT_EVENT_NONE; bus++) {
 		bool down = !lab_can_link_healthy(bus);
 		int64_t needed = down ? LINK_DOWN_DEBOUNCE_MS : LINK_UP_DEBOUNCE_MS;
 

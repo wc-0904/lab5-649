@@ -10,7 +10,8 @@ import struct
 import sys
 import time
 
-from protocol import (APPEND, APPEND_ACK_BASE, LAB5_FILTER_ID, LAB5_FILTER_MASK,
+from protocol import (APPEND, APPEND_ACK_BASE, CLIENT_REDIRECT as LAB5_CLIENT_REDIRECT,
+                      LAB5_FILTER_ID, LAB5_FILTER_MASK,
                       REF, REQ_VOTE_BASE, VOTE_BASE, is_consensus,
                       CTRL, FAULT, HB1, HB2, HB3, BLINK, FORCE, CATALOG, FAULT_IDS,
                       CAN_FRAME, Dedup, payload, valid, decode_wheel, origin)
@@ -112,10 +113,9 @@ class Cockpit:
         # Bootstrap the log with what the leader knows about itself. Link and
         # node detection for the peers is P5; this is enough for the entries to
         # replicate and commit.
+        # The agent queues this node's own reports and drives them from the
+        # run loop, so they survive this node losing the leadership.
         self.seen_nodes = {self.agent.node_id}
-        self.agent.client_append(event_node(self.agent.node_id, True))
-        for bus in (1, 2):
-            self.agent.client_append(event_link(self.agent.node_id, bus, True))
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp.setblocking(False)
         self.udp.bind((args.bind, args.port))
@@ -179,6 +179,10 @@ class Cockpit:
         :param now: Monotonic time from the caller's loop.
         :param now_cycles: Local microsecond counter captured at the socket read.
         """
+        if can_id == LAB5_CLIENT_REDIRECT:
+            # The leader's answer to one of this node's own requests.
+            self.agent.on_reply(data)
+            return
         if can_id == APPEND:
             # Only a follower applies these. A leader hearing its own append
             # back on the other bus must ignore it, and a leader that is no
@@ -468,6 +472,7 @@ class Cockpit:
                 self.blink_tx(now)
                 if self.agent.election_tick(now):
                     self.show_raft_state()
+                self.agent.client_tick(now)
                 self.agent.ref_tx(now)
                 self.agent.append_tx(now)
                 if now >= next_drift:

@@ -1037,16 +1037,26 @@ So once an STM32 leads, nothing puts `NODE_*_UP` into the log, no node is marked
 up, and every link is suppressed even though it committed. The entries are
 right and the rendering is right; the input is missing.
 
-The fix has two halves, and the first follows D15's own logic. Owner reports own
-links, so owner should report own node:
+**Fixed, not yet on the bench.** Both halves, following D15's own logic: the
+owner reports its own links, so the owner reports its own node.
 
-- **Each node reports `NODE_<self>_UP` for itself**, queued ahead of its link
-  reports in `raft_client_poll()`. Symmetric with the link path and needs no new
-  mechanism.
-- **The cockpit needs a client path that transmits**, rather than appending
-  directly. `client_append()` only works while it leads, so as a follower its own
-  `NODE_cockpit_UP` never reaches the log. The STM32's `send_client_request()` is
-  the shape to mirror.
+- `raft_client_poll()` queues `NODE_<self>_UP` ahead of the link reports, behind
+  a `self_reported` flag. The link loop now stops once something is queued, since
+  a node carries one request at a time.
+- The cockpit gained the client path it never had: `client_report()`,
+  `client_poll()` and `on_reply()`, mirroring the firmware. `client_append()`
+  only ever worked while this node led, so as a follower the Pi's own
+  `NODE_cockpit_UP` could not reach the log at all.
+- `refill_self_reports()` requeues all three when this node **stops** leading.
+  Anything a node appended while it led is not safe, because a new leader's log
+  wins and entries written under an older term are overwritten. Re-reporting is
+  how it gets back into the graph, and it is free when nothing changed: the
+  leader answers a repeated request without appending a second copy.
+- The reports are driven from the cockpit's run loop rather than once at
+  startup, so they survive a leadership change.
+
+Nine tests cover it, including the redirect, the retry, a reply addressed to
+another node, and the requeue on stepping down.
 
 Still to do in P10: the held events and replay-exactly-once behaviour of
 checkoff step 7, and `COCKPIT_OK`/`COCKPIT_ERROR`.

@@ -20,10 +20,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "pi" / "demo"))
 
 from cluster_config import load  # noqa: E402
-from network_state import event_node  # noqa: E402
-from protocol import REQ_VOTE_BASE, VOTE_BASE, lab5_id_for  # noqa: E402
+from network_state import event_link, event_node  # noqa: E402
+from protocol import (CLIENT_REQ_BASE, REQ_VOTE_BASE, VOTE_BASE,  # noqa: E402
+                      lab5_id_for)
 from raft_agent import (CANDIDATE, FOLLOWER, LEADER, RaftAgent,  # noqa: E402
-                        append_encode,
+                        REPLY_COMMITTED, REPLY_REDIRECT, append_encode,
+                        reply_encode,
                         vote_decode, vote_encode, vote_request_decode,
                         vote_request_encode)
 
@@ -414,6 +416,110 @@ class StepDownTests(unittest.TestCase):
         h.agent.on_append(append_encode(h.agent.term, 0, 0, 0))
         self.assertEqual(h.agent.role, FOLLOWER)
         self.assertEqual(h.agent.votes, set())
+
+
+class SelfReportTests(unittest.TestCase):
+    """Every node has to put itself into the graph, whoever is leading.
+
+    A link only renders if its node is up, which is right: a link belonging to
+    a node that is not up is meaningless, and dropNode removes a node with all
+    its links. But node-up entries used to come only from the cockpit
+    appending them directly while it led, so under any other leader no node was
+    ever marked up and the whole committed graph rendered empty even though the
+    link entries had replicated correctly.
+    """
+
+    def setUp(self):
+        """Load the real cluster configuration."""
+        self.config = load(ROOT / "config" / "cluster.conf")
+
+    def agent(self, node_id=1):
+        """Build a captured agent.
+
+        :param node_id: Numeric ID.
+        :return: Harness.
+        """
+        return Harness(node_id, self.config)
+
+    def test_a_node_queues_itself_and_both_links(self):
+        """Three reports: the node, then each bus."""
+        h = self.agent()
+        self.assertEqual(len(h.agent.self_events), 3)
+        self.assertEqual(h.agent.self_events[0], event_node(1, True))
+
+    def test_a_leader_records_its_own_reports_directly(self):
+        """No round trip is needed when this node is the one appending."""
+        h = self.agent()
+        for tick in range(4):
+            h.agent.client_tick(tick)
+        self.assertEqual(h.agent.self_events, [])
+        self.assertEqual(h.agent.log.last_index(), 3)
+
+    def test_a_follower_transmits_instead_of_appending(self):
+        """The path that did not exist: a client reporting to a remote leader."""
+        h = self.agent(2)
+        h.agent.client_tick(0.0)
+        self.assertEqual(h.agent.log.last_index(), 0)
+        self.assertEqual(h.last()[0], lab5_id_for(CLIENT_REQ_BASE, 2))
+        self.assertIsNotNone(h.agent.pending_event)
+
+    def test_only_one_request_is_in_flight(self):
+        """A node carries one pending request, as the firmware does."""
+        h = self.agent(2)
+        for tick in range(5):
+            h.agent.client_tick(tick * 0.001)
+        self.assertEqual(len(h.sent), 1)
+        self.assertEqual(len(h.agent.self_events), 2)
+
+    def test_an_unanswered_request_is_retried(self):
+        """Both buses can lose a frame, and the leader may have changed."""
+        h = self.agent(2)
+        h.agent.client_tick(0.0)
+        h.agent.client_tick(0.1)
+        self.assertEqual(len(h.sent), 1)
+        h.agent.client_tick(0.5)
+        self.assertEqual(len(h.sent), 2)
+
+    def test_a_commit_reply_releases_the_next_report(self):
+        """The queue drains one entry per answered request."""
+        h = self.agent(2)
+        h.agent.client_tick(0.0)
+        h.agent.on_reply(reply_encode(REPLY_COMMITTED, 1,
+                                      h.agent.pending_request, 7, 2))
+        self.assertIsNone(h.agent.pending_event)
+        h.agent.client_tick(1.0)
+        self.assertEqual(len(h.sent), 2)
+
+    def test_a_reply_for_another_node_is_ignored(self):
+        """Two clients routinely have the same request id outstanding."""
+        h = self.agent(2)
+        h.agent.client_tick(0.0)
+        h.agent.on_reply(reply_encode(REPLY_COMMITTED, 1,
+                                      h.agent.pending_request, 7, 3))
+        self.assertIsNotNone(h.agent.pending_event)
+
+    def test_a_redirect_records_the_leader_and_keeps_the_request(self):
+        """Reaching a follower must not lose the report."""
+        h = self.agent(2)
+        h.agent.client_tick(0.0)
+        h.agent.on_reply(reply_encode(REPLY_REDIRECT, 3,
+                                      h.agent.pending_request, 0, 2))
+        self.assertEqual(h.agent.leader, 3)
+        self.assertIsNotNone(h.agent.pending_event)
+
+    def test_stepping_down_requeues_the_self_reports(self):
+        """Anything this node appended while it led is not safe.
+
+        A new leader's log wins, so entries written under an older term are
+        overwritten. Re-reporting is how the node gets back into the graph.
+        """
+        h = self.agent()
+        for tick in range(4):
+            h.agent.client_tick(tick)
+        self.assertEqual(h.agent.self_events, [])
+        h.agent.on_append(append_encode(9, 0, 0, 0))
+        self.assertEqual(len(h.agent.self_events), 3)
+        self.assertIsNone(h.agent.pending_event)
 
 
 if __name__ == "__main__":
