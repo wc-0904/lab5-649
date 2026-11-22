@@ -1267,6 +1267,31 @@ module is already locked, so a node that led *after* following keeps the
 timeline it already had, which is what makes a handover seamless and keeps
 checkoff step 6's 100 microsecond bound reachable. Two tests cover both halves.
 
+**D16 revisited: zero was the wrong detection threshold.** The bench showed a
+`CANLINK_*_DOWN` followed by an `UP` about a second later, every twenty to sixty
+seconds, on both nodes and both buses, with nothing physically touched. The
+shape gave it away: 60 ms down debounce plus 750 ms up debounce, the machinery
+working correctly on a trigger that should never have fired.
+
+`lab_can_link_healthy()` required `tx_err_cnt == 0`. The CAN transmit error
+counter jumps by **eight** on one transmission error and falls by only **one**
+per successful frame, so a single stray bit keeps it non-zero for eight more
+frames, and the link reads as down for long enough to clear the debounce.
+
+Zero came from P5, to stop a disconnected branch oscillating: the MCP2515
+auto-recovers from bus off into error active with the counter reset, then fails
+again. But the 750 ms up debounce already covers that, and zero was the wrong
+way to get it. The threshold is now 96, three quarters of the way to the
+error-passive boundary at 128. A genuinely disconnected branch gets no
+acknowledgement at all, so its counter runs past 128 within a few frames and the
+state check catches it regardless; the threshold only decides how much transient
+noise is tolerated on a link that is really there.
+
+The principle is worth stating in the report: **a consensus log entry is
+expensive and permanent, so a detection threshold feeding one has to sit well
+above the noise floor, not at it.** The same reasoning produced the asymmetric
+debounce in P5.
+
 Still to do: 11.3, the bench work, where the open question is whether a node
 reachable only by relay still holds FL and RL within 1 ms. The relay adds a
 queue hop and a transmit worker to the reference path, which shifts that node's

@@ -308,12 +308,37 @@ void lab_can_send(uint16_t id, uint8_t data[8])
 	(void)enqueue(&frame, 1, origin, false);
 }
 
+/** @brief Transmit error counter below which a link still counts as healthy.
+ *
+ * Three quarters of the way to the error-passive boundary at 128, so a
+ * transient is tolerated while a disconnected branch, whose counter runs past
+ * 128 within a few frames, is not.
+ */
+#define LAB_LINK_TEC_LIMIT 96
+
 /** @brief Report whether this node's own link to one bus is transmitting cleanly.
  * @param bus Physical index 0 for A, 1 for B.
- * @return True when the controller is error active and has no transmit errors.
+ * @return True when the controller is error active and not close to error passive.
  */
 bool lab_can_link_healthy(int bus)
 {
+	/*
+	 * A transmit error counter below this still counts as a healthy link.
+	 *
+	 * Requiring zero, as this first did, reports a link down after any
+	 * single transient on the bus: the counter jumps by eight on one
+	 * transmission error and falls by only one per successful frame, so a
+	 * stray bit keeps it non-zero for eight more frames. On the bench that
+	 * wrote a DOWN and an UP into the consensus log every twenty to sixty
+	 * seconds with nothing physically touched. **A log entry is expensive
+	 * and permanent, so the threshold has to sit well above the noise.**
+	 *
+	 * 96 is three quarters of the way to the error-passive boundary at 128.
+	 * A genuinely disconnected branch gets no acknowledgement at all, so its
+	 * counter climbs past 128 within a few frames and the state check below
+	 * catches it regardless; this threshold only decides how much transient
+	 * noise is tolerated on a link that is really there.
+	 */
 	enum can_state state;
 	struct can_bus_err_cnt errors;
 
@@ -323,7 +348,8 @@ bool lab_can_link_healthy(int bus)
 	if (can_get_state(buses[bus].dev, &state, &errors) != 0) {
 		return false;
 	}
-	return state == CAN_STATE_ERROR_ACTIVE && errors.tx_err_cnt == 0;
+	return state == CAN_STATE_ERROR_ACTIVE &&
+		errors.tx_err_cnt < LAB_LINK_TEC_LIMIT;
 }
 
 /** @brief Send a Lab 5 frame onto both buses with the payload untouched.
