@@ -33,6 +33,47 @@ enum lab5_id { LAB5_REF = 0x008, LAB5_APPEND = 0x040, LAB5_APPEND_ACK_BASE = 0x0
  * 0x040..0x05f instead of one slot each.
  */
 enum lab5_filter { LAB5_FILTER_ID = 0x040, LAB5_FILTER_MASK = 0x7e0 };
+/** @brief Identifier bit marking a frame as a relayed copy.
+ *
+ * The relay flag lives in the identifier rather than the payload, for three
+ * reasons. Every Lab 5 payload is already full to eight bytes. A flag in the
+ * identifier is visible in a `candump` without decoding anything, which the
+ * checkoff reads directly. And it costs nothing to filter on.
+ *
+ * It is a high bit, so a relayed copy sorts **below** every original frame in
+ * arbitration. That is the right priority: a relayed copy is by definition a
+ * second chance at something, and it must never delay first-hand traffic. Lab
+ * 3's catalog tops out at 0x300, so 0x400 and above is free.
+ *
+ * A node never relays a frame that already carries this bit, which is the whole
+ * loop prevention: exactly one hop, and with three nodes one hop always
+ * suffices (TASKS.md D24).
+ */
+#define LAB5_RELAY_FLAG 0x400U
+/** @brief Report whether a frame is a relayed copy.
+ * @param id CAN identifier as received.
+ * @return True when the relay flag is set.
+ */
+static inline bool lab5_is_relayed(uint32_t id)
+{
+	return (id & LAB5_RELAY_FLAG) != 0;
+}
+/** @brief Identifier a relayed copy of a frame travels under.
+ * @param id Original identifier.
+ * @return Identifier with the relay flag set.
+ */
+static inline uint32_t lab5_relay_id(uint32_t id)
+{
+	return id | LAB5_RELAY_FLAG;
+}
+/** @brief Original identifier of a possibly relayed frame.
+ * @param id CAN identifier as received.
+ * @return Identifier with the relay flag cleared.
+ */
+static inline uint32_t lab5_origin_id(uint32_t id)
+{
+	return id & ~LAB5_RELAY_FLAG;
+}
 /** @brief Decoded REF payload: the master's clock, cycle counter and identity.
  *
  * Wire layout, little endian: bytes 0..5 are the master clock in microseconds

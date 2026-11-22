@@ -12,7 +12,9 @@ import time
 
 from protocol import (APPEND, APPEND_ACK_BASE, CLIENT_REDIRECT as LAB5_CLIENT_REDIRECT,
                       LAB5_FILTER_ID, LAB5_FILTER_MASK,
-                      REF, REQ_VOTE_BASE, VOTE_BASE, is_consensus,
+                      LAB5_RELAY_FLAG, REF, REQ_VOTE_BASE, VOTE_BASE,
+                      is_consensus, is_relayed,
+                      origin_id, relay_id,
                       CTRL, FAULT, HB1, HB2, HB3, BLINK, FORCE, CATALOG, FAULT_IDS,
                       CAN_FRAME, Dedup, payload, valid, decode_wheel, origin)
 from pps import Pps
@@ -39,6 +41,10 @@ def catalog_filters():
     exact = [(can_id, 0xC00007FF) for can_id in CATALOG]
     exact.append((REF, 0xC00007FF))
     exact.append((LAB5_FILTER_ID, 0xC0000000 | LAB5_FILTER_MASK))
+    # The same two again as relayed copies, which carry the relay flag.
+    exact.append((REF | LAB5_RELAY_FLAG, 0xC00007FF))
+    exact.append((LAB5_FILTER_ID | LAB5_RELAY_FLAG,
+                  0xC0000000 | LAB5_FILTER_MASK | LAB5_RELAY_FLAG))
     return b"".join(struct.pack("=II", can_id, mask) for can_id, mask in exact)
 
 
@@ -344,12 +350,21 @@ class Cockpit:
         if length != 8:
             self.bad_frames += 1
             return
-        if can_id == REF or is_consensus(can_id):
+        # Not named `origin`: that is the Lab 3 helper deciding who sent a
+        # catalog frame, and it is called a few lines below.
+        base_id = origin_id(can_id)
+        if base_id == REF or is_consensus(base_id):
+            # One relayed copy onto the other bus, before handling it. A node
+            # holding both links bridges reflexively rather than consulting its
+            # routing table, so there is no convergence window for traffic to
+            # fall into; see TASKS.md D25.
+            if not is_relayed(can_id) and not self.local_fail:
+                self.forward(relay_id(base_id), data, bus)
             # Lab 5 traffic: valid() covers the Lab 3 catalog only, so these
             # would otherwise be counted as malformed. The counter is read here
             # rather than inside receive_lab5 so the sync instant is as close to
             # the socket read as Python allows (TASKS.md D17).
-            self.receive_lab5(can_id, data, now, local_cycles_now())
+            self.receive_lab5(base_id, data, now, local_cycles_now())
             return
         if not valid(can_id, data):
             self.bad_frames += 1

@@ -36,6 +36,40 @@ def lab5_id_for(base, node):
     return base + node
 
 
+#: Identifier bit marking a frame as a relayed copy. Must match
+#: LAB5_RELAY_FLAG in include/lab_protocol.h. A high bit, so a relayed copy
+#: sorts below every original in arbitration: it is a second chance at
+#: something and must never delay first-hand traffic.
+LAB5_RELAY_FLAG = 0x400
+
+
+def is_relayed(can_id):
+    """Report whether a frame is a relayed copy.
+
+    :param can_id: CAN identifier as received.
+    :return: True when the relay flag is set.
+    """
+    return bool(can_id & LAB5_RELAY_FLAG)
+
+
+def relay_id(can_id):
+    """Identifier a relayed copy travels under.
+
+    :param can_id: Original identifier.
+    :return: Identifier with the relay flag set.
+    """
+    return can_id | LAB5_RELAY_FLAG
+
+
+def origin_id(can_id):
+    """Original identifier of a possibly relayed frame.
+
+    :param can_id: CAN identifier as received.
+    :return: Identifier with the relay flag cleared.
+    """
+    return can_id & ~LAB5_RELAY_FLAG
+
+
 def is_consensus(can_id):
     """Report whether an identifier falls in the masked consensus range.
 

@@ -184,6 +184,50 @@ static bool duplicate(const struct lab_rx *rx)
 	return result;
 }
 
+/** @brief Put one relayed copy of a Lab 5 frame on the other bus.
+ *
+ * Checkoff step 5 pulls the cockpit off one bus and the drivetrain off the
+ * other, so the two cannot hear each other at all and every frame between them
+ * has to cross at the node that still holds both. Lab 3's relay only ever
+ * carried catalog traffic; consensus and time frames were dropped, which is why
+ * that scenario could not work before.
+ *
+ * Relaying here is a **reflex, not a routing decision** (TASKS.md D25). A node
+ * holding both links forwards one copy and does not consult its routing table
+ * to decide whether anyone needs it. That is deliberate: the handout's section
+ * 5.2 warns that after a second link failure the tables take several rounds to
+ * settle, and traffic has to survive that window. A reflex has no window,
+ * because there is nothing to converge. The routing table still exists and is
+ * still built from `getNetwork()`, but it informs the client's view of
+ * reachability rather than gating delivery.
+ *
+ * The cost is one duplicate per frame while every link is healthy. Every Lab 5
+ * handler is already idempotent, because each frame arrives twice over the two
+ * buses in any case, so a third copy changes nothing but bus load. At 500
+ * kbit/s a reference is about 256 microseconds on the wire against a 20 ms
+ * period, so there is room.
+ * @param rx Received frame, with the bus it arrived on.
+ * @param id The frame's original identifier, relay flag already cleared.
+ */
+static void relay_lab5(const struct lab_rx *rx, uint32_t id)
+{
+	struct lab_rx copy;
+
+	/* One hop only: a copy is never copied again. */
+	if (lab5_is_relayed(rx->frame.id)) {
+		return;
+	}
+	/* Only a node still holding both links can bridge them. */
+	if (!lab_can_link_healthy(0) || !lab_can_link_healthy(1)) {
+		return;
+	}
+	copy = *rx;
+	copy.frame.id = lab5_relay_id(id);
+	if (k_msgq_put(&relay_queue, &copy, K_NO_WAIT) != 0) {
+		atomic_inc(&duplicates);
+	}
+}
+
 /** @brief Validate, track per-bus health before dedup, and publish events.
  * @param a Unused.
  * @param b Unused.
@@ -204,16 +248,22 @@ static void dispatch_task(void *a, void *b, void *c)
 		uint32_t start = begin(DISPATCH);
 		lab_io_toggle(rx.bus == 0 ? LAB_RX_A : LAB_RX_B);
 
-		uint32_t id = rx.frame.id;
+		uint32_t id = lab5_origin_id(rx.frame.id);
 		/*
 		 * Lab 5 traffic is not Lab 3 catalog traffic: lab_valid() would
 		 * reject it and inflate the malformed counter. REF goes to the
-		 * agent, which owns the REF_RX marker and SYNC. The rest of the
-		 * consensus range is accepted by the filter and dropped until the
-		 * phase that owns it. rx.cycles, not the uptime, is the sync
-		 * instant: it was captured in the receive callback, before the
-		 * queue wait this thread has just finished (TASKS.md D17).
+		 * agent, which owns the REF_RX marker and SYNC. rx.cycles, not
+		 * the uptime, is the sync instant: it was captured in the
+		 * receive callback, before the queue wait this thread has just
+		 * finished (TASKS.md D17).
+		 *
+		 * A relayed copy dispatches on its original identifier, so every
+		 * handler below is unaware of how the frame arrived. Only the
+		 * decision to relay it onward looks at the flag.
 		 */
+		if (id == LAB5_REF || lab5_is_consensus(id)) {
+			relay_lab5(&rx, id);
+		}
 		if (id == LAB5_REF) {
 			raft_on_ref(rx.frame.data, (uint64_t)k_uptime_get() * 1000U,
 				    rx.cycles);

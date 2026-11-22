@@ -20,7 +20,11 @@ class ProtocolTests(unittest.TestCase):
         # The Lab 3 catalog and REF are matched exactly; the Lab 5 consensus
         # range is one masked filter, so the leader hears every follower's ack.
         exact = [entry for entry in filters if entry[1] & 0x7FF == 0x7FF]
-        self.assertEqual([can_id for can_id, _ in exact], list(CATALOG) + [0x008])
+        # The Lab 3 catalog, REF, the consensus range, then the same two
+        # again as relayed copies carrying LAB5_RELAY_FLAG.
+        self.assertEqual([can_id for can_id, _ in exact][:len(CATALOG) + 1],
+                         list(CATALOG) + [0x008])
+        self.assertIn(0x008 | 0x400, [can_id for can_id, _ in exact])
         for can_id, mask in exact:
             # Linux routes masks with CAN_ERR_FLAG to its error subscription list.
             self.assertEqual(mask & 0x20000000, 0)
@@ -30,7 +34,10 @@ class ProtocolTests(unittest.TestCase):
             for flag in (0x80000000, 0x40000000):
                 self.assertNotEqual((can_id | flag) & mask, can_id & mask)
         ranged = [entry for entry in filters if entry[1] & 0x7FF != 0x7FF]
-        self.assertEqual(ranged, [(0x040, 0xC00007E0)])
+        # Two ranges: originals and their relayed copies. The consensus mask
+        # already covers bit ten, so the relay flag separates them without
+        # widening it.
+        self.assertEqual(ranged, [(0x040, 0xC00007E0), (0x440, 0xC00007E0)])
         for node in (1, 2, 3):
             ack = 0x044 + node
             self.assertEqual(ack & 0x7E0, 0x040)

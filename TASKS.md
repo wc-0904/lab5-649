@@ -1205,7 +1205,55 @@ needed.
 | 10.2 | Error state within 100 ms, motor braked, from **D27** | `lab_tasks.c` | Cold start with the proxy stopped shows all three nodes in error, hazards in step |
 | 10.3 | Held events while the cockpit is down, from **D26** | leader, `cockpit.py` | On return they appear exactly once, in order, marked replayed, then live events |
 
-### P11. Relay and the multi-link convergence window, checkoff steps 5 and 9
+### P11. Relay and the multi-link convergence window, checkoff steps 5 and 9  [11.1 and 11.2 WRITTEN, not yet on hardware]
+
+**The scenario, and why it could not work before.** Checkoff step 5 pulls the
+cockpit off one bus and the drivetrain off the other, so those two cannot hear
+each other at all and every frame between them has to cross at the node that
+still holds both. Lab 3's relay carried only catalog traffic: the dispatcher
+returned early for Lab 5 frames, so `REF`, `APPEND`, acknowledgements, votes and
+client requests were never forwarded.
+
+**D24 settled: the flag goes in the identifier, not the payload.** Three
+reasons. Every Lab 5 payload is already full to eight bytes. A flag in the
+identifier is visible in a `candump` without decoding anything, which is what
+the checkoff reads. And it costs nothing to filter on.
+
+`LAB5_RELAY_FLAG` is 0x400, a high bit, so **a relayed copy sorts below every
+original in arbitration**. That is the correct priority: a relayed copy is by
+definition a second chance at something and must never delay first-hand
+traffic. Lab 3's catalog tops out at 0x300, so the range was free. The existing
+consensus mask 0x7e0 already covers bit ten, so the two ranges separate with no
+mask change: originals match `(0x040, 0x7e0)`, copies match `(0x440, 0x7e0)`.
+
+**One hop is enforced structurally**: a node never relays a frame that already
+carries the flag. With three nodes one hop always suffices, so nothing is lost,
+and no loop is possible regardless of topology.
+
+**D25 settled: relaying is a reflex, not a routing decision.** A node holding
+both links forwards one copy and does **not** consult its routing table to
+decide whether anyone needs it. This is the direct answer to the handout's
+section 5.2 warning that after a second link failure the tables take several
+rounds to settle and traffic has to survive that window: **a reflex has no
+window, because there is nothing to converge.** The routing table still exists
+and is still built from `getNetwork()`, but it informs the client's view of
+reachability rather than gating delivery.
+
+The cost is one duplicate per frame while every link is healthy. Every Lab 5
+handler is already idempotent, because each frame arrives twice over the two
+buses in any case, so a third copy changes nothing but bus load. A reference is
+about 256 microseconds on the wire at 500 kbit/s against a 20 ms period, so
+there is room.
+
+Eight tests pin the identifier scheme on both endpoints, including that a
+relayed copy loses arbitration, does not collide with the Lab 3 catalog, stays
+inside eleven bits, and is not mistaken for an original by the consensus mask.
+
+Still to do: 11.3, the bench work, where the open question is whether a node
+reachable only by relay still holds FL and RL within 1 ms. The relay adds a
+queue hop and a transmit worker to the reference path, which shifts that node's
+`base` by the relay latency. It is systematic rather than random, so it appears
+as a constant offset rather than jitter, but it has never been measured.
 
 | # | Task | Where | Done when |
 |---|---|---|---|
