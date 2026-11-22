@@ -279,15 +279,24 @@ class AgentTests(unittest.TestCase):
         agent.on_ack(3, ack_encode(1, 2, 0))
         self.assertEqual(agent.commit_index, 2)
 
-    def test_a_rejection_backs_the_follower_up(self):
+    def test_a_rejection_jumps_straight_to_the_reported_match(self):
+        """Raft's fast backtrack: the ack already carries the exact index.
+
+        raft_log.accept() (and its C counterpart) compute the follower's real
+        last index on every rejection path and return it as match_index, so
+        the leader can jump nextIndex there in one round trip instead of
+        decrementing by one and re-probing. A stale nextIndex of 9, with the
+        follower reporting it only holds up to 1, must jump straight to 2, not
+        merely step down to 8.
+        """
         from network_state import event_node
         from raft_agent import ack_encode
         agent, _ = self.agent("cockpit")
         for node in (1, 2, 3):
             agent.client_append(event_node(node, True))
-        agent.next_index[2] = 4
-        agent.on_ack(2, ack_encode(1, 0, 2))         # MISSING
-        self.assertEqual(agent.next_index[2], 3)
+        agent.next_index[2] = 9
+        agent.on_ack(2, ack_encode(1, 1, 2))         # MISSING, follower has up to 1
+        self.assertEqual(agent.next_index[2], 2)
         self.assertEqual(agent.commit_index, 0)
 
     def test_the_header_is_built_for_the_furthest_behind_follower(self):

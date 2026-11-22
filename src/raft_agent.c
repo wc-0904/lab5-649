@@ -751,9 +751,24 @@ void raft_on_ack(const uint8_t data[8], int from)
 		if (advanced) {
 			network_print(&state.net, line, sizeof(line));
 		}
-	} else if (state.next_index[from] > 1) {
-		/* Walk back one entry and try again; the follower is behind. */
-		state.next_index[from]--;
+	} else {
+		/*
+		 * Jump straight to what the follower reported holding, rather
+		 * than walking nextIndex back one entry at a time. raft_log_
+		 * accept() already computes exactly this on every rejection
+		 * path: the follower's real last index on a gap, the index
+		 * left after truncating a mismatched tail, or zero when the
+		 * ring has forgotten that far back. That value was already
+		 * being sent on every rejected ack; it just was not being
+		 * used. On the bench, decrementing by one took several seconds
+		 * to walk a freshly rebooted follower's empty log back to the
+		 * leader's accumulated backlog, one round trip per step and
+		 * sharing the round robin with every other follower; jumping
+		 * to the reported match does it in a single round trip. This
+		 * is Raft's standard fast backtrack, using information the
+		 * protocol already carries rather than adding a new field.
+		 */
+		state.next_index[from] = (uint32_t)ack.match_index + 1;
 	}
 	k_spin_unlock(&state_lock, key);
 

@@ -1023,8 +1023,21 @@ class RaftAgent:
             self.match_index[node] = max(self.match_index[node], ack["match_index"])
             self.next_index[node] = self.match_index[node] + 1
         else:
-            # Gap or conflict: back up one and try again on the next append.
-            self.next_index[node] = max(1, self.next_index[node] - 1)
+            # Jump straight to what the follower reported holding, rather
+            # than walking nextIndex back one entry at a time.
+            # network_state.RaftLog.accept() already computes exactly this on
+            # every rejection path: the follower's real last index on a gap,
+            # the index left after truncating a mismatched tail, or zero when
+            # the ring has forgotten that far back. That value was already
+            # being sent on every rejected ack; it just was not being used.
+            # On the bench, decrementing by one took several seconds to walk a
+            # freshly rebooted follower's empty log back to the leader's
+            # accumulated backlog, one round trip per step and sharing the
+            # round robin with every other follower; jumping to the reported
+            # match does it in a single round trip. This is Raft's standard
+            # fast backtrack, using information the protocol already carries
+            # rather than adding a new field.
+            self.next_index[node] = ack["match_index"] + 1
         return self.advance_commit()
 
     def advance_commit(self):
