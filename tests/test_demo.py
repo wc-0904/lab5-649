@@ -191,19 +191,19 @@ class ClientBootstrapTests(unittest.TestCase):
         app.seen_nodes = {1}
         return app, sent
 
-    def test_first_sight_of_a_peer_appends_node_up_exactly_once(self):
+    def test_heartbeat_does_not_duplicate_the_peers_node_up(self):
         app, _ = self.cockpit()
         self.assertEqual(app.agent.log.last_index(), 0)
         app.can[0].recv.return_value = CAN_FRAME.pack(
             HB2, 8, payload(HB2, 0, bytes((0, 3))))
         app.receive(0, 1.0)
-        self.assertEqual(app.agent.log.last_index(), 1)
+        self.assertEqual(app.agent.log.last_index(), 0)
         self.assertEqual(app.seen_nodes, {1, 2})
         # Seeing it again must not append a second NODE_steering_UP.
         app.can[1].recv.return_value = CAN_FRAME.pack(
             HB2, 8, payload(HB2, 1, bytes((0, 3))))
         app.receive(1, 1.1)
-        self.assertEqual(app.agent.log.last_index(), 1)
+        self.assertEqual(app.agent.log.last_index(), 0)
 
 
 class IndicatorTests(unittest.TestCase):

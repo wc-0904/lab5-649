@@ -6,6 +6,16 @@ tests/test_lab5_sync.py can hold the two implementations against each other.
 Integer Q16.16 throughout, not float, because the comparison has to be exact.
 """
 import time
+import threading
+from functools import wraps
+
+def synchronized(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return call
+
 
 #: Fractional bits in the drift ratio.
 RATIO_SHIFT = 16
@@ -72,10 +82,12 @@ class TimeSync:
         :param hz: Ticks per second of the local counter fed to on_ref.
         :param delay_us: One way delay estimate in microseconds.
         """
+        self._lock = threading.RLock()
         self.hz = hz
         self.delay_us = delay_us
         self.reset()
 
+    @synchronized
     def reset(self):
         """Forget any master and return to the unsynchronized state."""
         self.have_last = False
@@ -97,6 +109,7 @@ class TimeSync:
         """
         return cycles * 1000000 // self.hz
 
+    @synchronized
     def on_ref(self, master_us, local_cycles):
         """Apply one reference message.
 
@@ -145,6 +158,7 @@ class TimeSync:
         self.last_cycles = local_cycles
         self.have_last = True
 
+    @synchronized
     def global_us(self, now_cycles):
         """Read the current global time.
 
@@ -153,7 +167,8 @@ class TimeSync:
         """
         if not self.have_last:
             return 0
-        since = self.cycles_to_us((now_cycles - self.last_cycles) % CYCLE_MODULO)
+        elapsed = (now_cycles - self.last_cycles + (1 << 31)) % CYCLE_MODULO - (1 << 31)
+        since = (abs(elapsed) * 1000000 // self.hz) * (-1 if elapsed < 0 else 1)
         return self.base_us + ((since * self.ratio) >> RATIO_SHIFT)
 
     def ppm(self):

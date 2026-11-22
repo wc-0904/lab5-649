@@ -289,6 +289,11 @@ static void dispatch_task(void *a, void *b, void *c)
 		 */
 		uint32_t id = lab5_is_relayed(rx.frame.id) ?
 			lab5_origin_id(rx.frame.id) : rx.frame.id;
+		if ((id == LAB5_REF || lab5_is_consensus(id)) && snapshot().local_fail) {
+			finish(DISPATCH, start);
+			continue;
+		}
+
 		/*
 		 * Lab 5 traffic is not Lab 3 catalog traffic: lab_valid() would
 		 * reject it and inflate the malformed counter. REF goes to the
@@ -320,7 +325,7 @@ static void dispatch_task(void *a, void *b, void *c)
 			finish(DISPATCH, start);
 			continue;
 		}
-		if (id == LAB5_CLIENT_REDIRECT) {
+		if (id > LAB5_CLIENT_REDIRECT && id <= LAB5_CLIENT_REDIRECT + LAB5_CFG_N) {
 			raft_on_reply(rx.frame.data);
 			finish(DISPATCH, start);
 			continue;
@@ -585,10 +590,10 @@ static void blink_task(void *a, void *b, void *c)
 		uint64_t clock_us = blink_clock_us();
 		/*
 		 * Hazards run fast only when the cockpit itself is gone, which
-		 * is what the leader identity tells us. An error state with the
-		 * cockpit still leading stays at 2 Hz.
+		 * is recorded by COCKPIT_ERROR. Leadership alone says nothing
+		 * about cockpit liveness when booting with a random leader.
 		 */
-		uint32_t half_us = (s.error && raft_leader() != LAB_NODE_COCKPIT) ?
+		uint32_t half_us = (s.error && raft_failure_mode()) ?
 			HAZARD_FAST_HALF_US : BLINK_HALF_US;
 		bool phase = blink_phase(clock_us, half_us);
 
@@ -820,10 +825,15 @@ static void monitor_task(void *a, void *b, void *c)
 		 */
 		pps_refine();
 		/* SYNC tracks liveness, so it has to age out here, not only on RX. */
-		raft_agent_tick(now);
-		raft_election_tick(now, lab_can_heard_within(LAB5_ISOLATION_MS));
-		raft_append_tx(now);
-		raft_client_poll(now);
+			raft_agent_tick(now);
+		if (!snapshot().local_fail) {
+			raft_election_tick(now, lab_can_heard_within(LAB5_ISOLATION_MS));
+			raft_append_tx(now);
+			raft_client_poll(now);
+		} else {
+			raft_agent_suspend();
+		}
+
 		/*
 		 * Cockpit liveness, on either bus. Reported to the agent before
 		 * the state lock is taken, because the agent holds its own and
@@ -836,8 +846,10 @@ static void monitor_task(void *a, void *b, void *c)
 			cockpit |= peek.seen[0][bus] &&
 				now - peek.heartbeat[0][bus] < LAB_TIMEOUT_MS;
 		}
-		raft_report_cockpit(cockpit);
-		raft_peer_tick(now, lab_can_heard_within(LAB5_ISOLATION_MS));
+		if (!peek.local_fail) {
+			raft_report_cockpit(cockpit);
+			raft_peer_tick(now, lab_can_heard_within(LAB5_ISOLATION_MS));
+		}
 		/*
 		 * The committed log is the cluster's agreed view, so failure
 		 * mode holds the vehicle in the error state even when this
@@ -1065,6 +1077,11 @@ int lab_tasks_start(void)
 		return rc;
 	}
 	time_sync_set_tick_hz(PPS_TICK_HZ);
+	time_sync_reset();
+	if (raft_role() == RAFT_LEADER) {
+		time_sync_assume_master(LAB5_EPOCH_US + (uint64_t)k_uptime_get() * 1000U,
+				pps_now());
+	}
 	rc = lab_can_init();
 	if (rc != 0) {
 		return rc;

@@ -92,24 +92,37 @@ void raft_log_init(struct raft_log *log)
 	log->count = 0;
 }
 
-/** @brief Append one entry, dropping the oldest when the ring is full.
- * @param log Log to append to.
- * @param term Term the entry was created in.
- * @param event Encoded event.
- * @return Index assigned to the new entry; the first entry is index 1.
- */
+/* Codes 1..20 represent the complete event catalog; zero is a no-op. */
+static const uint8_t event_codes[] = {
+	0, 1, 2, 0x11, 0x12, 0x13, 0x19, 0x1a, 0x1b,
+	0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
+	0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d,
+};
+
+/** @brief Append without evicting history; return zero when full. */
 uint32_t raft_log_append(struct raft_log *log, uint8_t term, uint8_t event)
 {
 	uint32_t index = log->first + log->count;
+	uint8_t code = 0;
 
-	log->ring[(index - 1) % RAFT_LOG_RING].term = term;
-	log->ring[(index - 1) % RAFT_LOG_RING].event = event;
-	if (log->count < RAFT_LOG_RING) {
-		log->count++;
-	} else {
-		/* Ring full: the oldest entry has just been overwritten. */
-		log->first++;
+	if (log->count >= RAFT_LOG_RING) {
+		return 0;
 	}
+	for (uint8_t i = 0; i < sizeof(event_codes); i++) {
+		if (event_codes[i] == event) {
+			code = i;
+			break;
+		}
+	}
+	log->terms[index - 1] = term;
+	for (uint32_t bit = 0; bit < 5; bit++) {
+		uint32_t offset = (index - 1) * 5 + bit;
+		uint8_t mask = (uint8_t)(1U << (offset % 8));
+
+		log->events[offset / 8] = (log->events[offset / 8] & (uint8_t)~mask) |
+			((code & (1U << bit)) != 0 ? mask : 0);
+	}
+	log->count++;
 	return index;
 }
 
@@ -142,7 +155,15 @@ bool raft_log_get(const struct raft_log *log, uint32_t index, struct raft_entry 
 	if (log->count == 0 || index < log->first || index > raft_log_last_index(log)) {
 		return false;
 	}
-	*entry = log->ring[(index - 1) % RAFT_LOG_RING];
+	uint8_t code = 0;
+
+	entry->term = log->terms[index - 1];
+	for (uint32_t bit = 0; bit < 5; bit++) {
+		uint32_t offset = (index - 1) * 5 + bit;
+
+		code |= ((log->events[offset / 8] >> (offset % 8)) & 1U) << bit;
+	}
+	entry->event = code < sizeof(event_codes) ? event_codes[code] : RAFT_EVENT_NONE;
 	return true;
 }
 
@@ -197,9 +218,8 @@ enum raft_append_result raft_log_accept(struct raft_log *log, uint8_t current_te
 		return RAFT_APPEND_FORGOTTEN;
 	}
 	if (have != prev_term) {
-		/* Our tail disagrees: drop it so the leader can back up. */
-		raft_log_truncate(log, prev_index);
-		*match_index = raft_log_last_index(log);
+		/* A rejected append cannot change the log. */
+		*match_index = prev_index > 0 ? prev_index - 1 : 0;
 		return RAFT_APPEND_MISMATCH;
 	}
 	if (count != 0) {
@@ -219,7 +239,9 @@ enum raft_append_result raft_log_accept(struct raft_log *log, uint8_t current_te
 		 * term here rewrites history under a new leader and makes the
 		 * next consistency check on this index fail for ever.
 		 */
-		raft_log_append(log, entry_term, event);
+		if (raft_log_append(log, entry_term, event) == 0) {
+			return RAFT_APPEND_FORGOTTEN;
+		}
 	}
 	*match_index = prev_index + (count != 0 ? 1 : 0);
 	return RAFT_APPEND_ACCEPTED;

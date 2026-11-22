@@ -41,7 +41,7 @@ if((LAB_MEASURE_MODE STREQUAL "2" AND NOT LAB_NODE_ID STREQUAL "3") OR
 endif()
 target_compile_definitions(app PRIVATE LAB_MEASURE_MODE=${LAB_MEASURE_MODE})
 option(LAB_DIAGNOSTICS "Enable intrusive periodic console timing summaries" OFF)
-option(LAB_PIN_SELFTEST "Walk the Lab 5 outputs once at boot so each can be identified" ON)
+option(LAB_PIN_SELFTEST "Walk the Lab 5 outputs once at boot so each can be identified" OFF)
 target_compile_definitions(app PRIVATE LAB_PIN_SELFTEST=$<BOOL:${LAB_PIN_SELFTEST}>)
 target_compile_definitions(app PRIVATE LAB_DIAGNOSTICS=$<BOOL:${LAB_DIAGNOSTICS}> LAB_NODE_ID=${LAB_NODE_ID} LAB_TRACE_TASK=${LAB_TRACE_TASK})
 

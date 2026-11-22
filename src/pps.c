@@ -155,7 +155,7 @@ static void pps_isr(const void *arg)
 		 * comparator matched, which is the local clock at the edge by
 		 * construction rather than a reading taken near it.
 		 */
-		state.report.global_us = state.edge_global_us;
+		state.report.global_us = time_sync_global_us(at);
 		state.report.local_ticks = at;
 		state.report.ratio = time_sync_ratio();
 		state.report.correction_us = time_sync_correction_us();
@@ -187,6 +187,7 @@ void pps_refine(void)
 
 	/* Only while waiting for a rising edge that has already been chosen. */
 	if (!state.ready || !state.running || state.pin_high ||
+	    LL_TIM_IsActiveFlag_CC1(timer) ||
 	    !time_sync_locked()) {
 		k_spin_unlock(&lock, key);
 		return;
@@ -200,7 +201,8 @@ void pps_refine(void)
 	}
 	ahead_us = (int64_t)(state.edge_global_us - global_now);
 	local_ahead = (ahead_us << TIME_SYNC_RATIO_SHIFT) / time_sync_ratio();
-	if (local_ahead >= PPS_REFINE_GUARD_US) {
+	if (local_ahead >= PPS_REFINE_GUARD_US &&
+	    (int32_t)(LL_TIM_OC_GetCompareCH1(timer) - now) >= PPS_REFINE_GUARD_US) {
 		LL_TIM_OC_SetCompareCH1(timer, now + (uint32_t)local_ahead);
 	}
 	k_spin_unlock(&lock, key);
@@ -226,12 +228,12 @@ bool pps_take_report(struct pps_report *out)
 /** @brief Schedule the next edge and keep scheduling after it. */
 void pps_start(void)
 {
-	if (!state.ready || state.running) {
-		return;
-	}
-	if (arm_next_edge()) {
+	k_spinlock_key_t key = k_spin_lock(&lock);
+
+	if (state.ready && !state.running && arm_next_edge()) {
 		state.running = true;
 	}
+	k_spin_unlock(&lock, key);
 }
 
 /** @brief Start the counter and claim PA0 as the compare output.

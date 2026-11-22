@@ -20,6 +20,8 @@ enum raft_role { RAFT_FOLLOWER, RAFT_CANDIDATE, RAFT_LEADER };
  * boots as a follower in term 0 with no leader, leaving the election to P9.
  */
 void raft_agent_init(void);
+/** @brief Stop participating after a local test failure; retain term and vote. */
+void raft_agent_suspend(void);
 /** @brief Report the current role.
  * @return Role of this node.
  */

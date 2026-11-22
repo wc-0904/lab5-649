@@ -14,7 +14,7 @@ APPEND_ACK_BASE = 0x044
 REQ_VOTE_BASE = 0x048
 VOTE_BASE = 0x04c
 CLIENT_REQ_BASE = 0x050
-CLIENT_REDIRECT = 0x054
+CLIENT_REDIRECT = 0x054  # Per-sender base; replies are 0x055..0x057.
 
 #: One masked filter accepting the whole consensus range, matching enum lab5_filter.
 LAB5_FILTER_ID = 0x040

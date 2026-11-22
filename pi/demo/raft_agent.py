@@ -325,6 +325,7 @@ class RaftAgent:
         self.node_id = node_id
         self.send = send
         self.leader = config["default_leader_id"]
+        self.client_leader = self.leader
         # A pre-defined leader means term 1 and no election at boot, per Part 2.
         self.term = BOOT_TERM if self.leader else 0
         self.role = LEADER if self.leader == node_id else FOLLOWER
@@ -332,7 +333,7 @@ class RaftAgent:
         self.refs_sent = 0
         self.appends_sent = 0
         self.commit_index = 0
-        self.log = RaftLog()
+        self.log = RaftLog(config["log_size"])
         self.net = Network()
         self.peers = [n for n in range(1, config["N"] + 1) if n != node_id]
         # Raft's nextIndex and matchIndex, one per follower.
@@ -354,6 +355,7 @@ class RaftAgent:
         self.sync = TimeSync(hz=1000000)
         self.master_offset_us = 0
         self.refs_received = 0
+        self.last_ref = float("-inf")
         # Election. Mirrors src/raft_agent.c; see TASKS.md D13 and D14.
         self.election = Election(config["election_seed"], node_id)
         self.election_base_ms = config["missed_heartbeats"] * config["heartbeat_ms"]
@@ -419,6 +421,8 @@ class RaftAgent:
         self.leader = 0
         self.voted_for = 0
         self.votes = set()
+        self.client_seen.clear()
+        self.cockpit_known = False
 
     def log_is_current(self, last_index, last_term):
         """Report whether a candidate's log is at least as current as ours.
@@ -453,6 +457,9 @@ class RaftAgent:
         if self.role == LEADER or now - self.last_contact < self.election_timeout:
             return False
         if not hearing:
+            self.last_contact = now
+            return False
+        if self.term >= 255:
             self.last_contact = now
             return False
         self.term += 1
@@ -528,6 +535,8 @@ class RaftAgent:
         self.match_index = {peer: 0 for peer in self.peers}
         # A new leader's log is its own; nothing recorded before is in flight.
         self.self_index = 0
+        self.client_seen.clear()
+        self.cockpit_known = False
         if self.config["Debug"]:
             print("raft: LEADER term=%d with %d of %d votes"
                   % (self.term, len(self.votes), self.config["N"]), flush=True)
@@ -588,7 +597,7 @@ class RaftAgent:
                                         header["event"])
         if result == APPEND_ACCEPTED:
             # Commit no further than what we actually hold.
-            target = min(header["commit"], self.log.last_index())
+            target = min(header["commit"], match)
             if target > self.commit_index:
                 self.commit_index = target
                 self.net.replay(self.log, self.commit_index)
@@ -649,6 +658,9 @@ class RaftAgent:
         if self.is_leader():
             return False
         master_us, cycle, master = ref_decode(data)
+        if (not 1 <= master <= self.config["N"] or master == self.node_id
+                or self.leader not in (0, master)):
+            return False
         # The frame names its master, which is the only way a node learns who
         # leads when default_leader is random: REF and APPEND each use one
         # shared identifier and neither otherwise says who sent it.
@@ -665,6 +677,7 @@ class RaftAgent:
                          else local_cycles_now())
         self.cycle = cycle
         self.refs_received += 1
+        self.last_ref = time.monotonic()
         return True
 
     def global_us(self, local_cycles=None):
@@ -1037,7 +1050,7 @@ class RaftAgent:
             self.pending_event = None
         elif reply["leader"]:
             # Redirected: remember who leads and let the retry go there.
-            self.leader = reply["leader"]
+            self.client_leader = reply["leader"]
 
     def on_client_request(self, node, data):
         """Steps 1, 2 and 6 of Figure 2, or the redirect when not leading.
@@ -1053,11 +1066,11 @@ class RaftAgent:
         :return: (can_id, payload) to send back, or None when nothing to say.
         """
         request = client_decode(data)
-        key = (node, request["request"])
+        key = (node, request["request"], request["event"])
         if not self.is_leader():
             if not self.leader:
                 return None
-            return (LAB5_CLIENT_REDIRECT,
+            return (lab5_id_for(LAB5_CLIENT_REDIRECT, self.node_id),
                     reply_encode(REPLY_REDIRECT, self.leader, request["request"], 0, node))
         if key in self.client_seen:
             index = self.client_seen[key]
@@ -1066,7 +1079,9 @@ class RaftAgent:
             if index is None:
                 return None
             self.client_seen[key] = index
-        return (LAB5_CLIENT_REDIRECT,
+        if not index or index > self.commit_index:
+            return None
+        return (lab5_id_for(LAB5_CLIENT_REDIRECT, self.node_id),
                 reply_encode(REPLY_COMMITTED, self.node_id, request["request"], index,
                              node))
 
@@ -1103,7 +1118,9 @@ class RaftAgent:
                     print("raft: stepping down, term=%d refused by %s"
                           % (self.term, self.config["nodes"][node - 1]), flush=True)
             return False
-        if not self.is_leader() or node not in self.next_index:
+        if (ack["term"] != self.term or not self.is_leader()
+                or node not in self.next_index
+                or ack["match_index"] > self.log.last_index()):
             return False
         self.acks += 1
         if ack["result"] == 0:
@@ -1125,6 +1142,7 @@ class RaftAgent:
             # fast backtrack, using information the protocol already carries
             # rather than adding a new field.
             self.next_index[node] = ack["match_index"] + 1
+            self.match_index[node] = min(self.match_index[node], ack["match_index"])
         return self.advance_commit()
 
     def advance_commit(self):

@@ -12,8 +12,8 @@ NODES = 3
 #: CAN buses each node attaches to.
 BUSES = 2
 
-#: Entries the STM32 ring holds. The Pi keeps the whole log; see TASKS.md D7.
-LOG_RING = 4096
+#: Default retained entries on every node. Full logs refuse additional writes.
+LOG_RING = 30000
 
 #: Event encodings, matching enum raft_event in include/raft_log.h.
 EVENT_NONE = 0x00
@@ -108,17 +108,16 @@ class RaftLog:
         self.first = 1
 
     def append(self, term, event):
-        """Append one entry, dropping the oldest when a bounded ring is full.
+        """Append one entry, returning zero when the configured capacity is full.
 
         :param term: Term the entry was created in.
         :param event: Encoded event.
         :return: Index assigned; the first entry is index 1.
         """
+        if self.ring and len(self.entries) >= self.ring:
+            return 0
         index = self.first + len(self.entries)
         self.entries.append((term, event))
-        if self.ring and len(self.entries) > self.ring:
-            self.entries.pop(0)
-            self.first += 1
         return index
 
     def first_index(self):
@@ -184,8 +183,7 @@ class RaftLog:
         if have is None:
             return APPEND_FORGOTTEN, 0
         if have != prev_term:
-            self.truncate(prev_index)
-            return APPEND_MISMATCH, self.last_index()
+            return APPEND_MISMATCH, max(0, prev_index - 1)
         if count:
             nxt = prev_index + 1
             existing = self.get(nxt)
@@ -196,7 +194,8 @@ class RaftLog:
             # The entry's own term, not the leader's. Storing the leader's term
             # rewrites history under a new leader and makes the next
             # consistency check on this index fail for ever.
-            self.append(entry_term, event)
+            if self.append(entry_term, event) == 0:
+                return APPEND_FORGOTTEN, 0
         return APPEND_ACCEPTED, prev_index + (1 if count else 0)
 
     def term_at(self, index):

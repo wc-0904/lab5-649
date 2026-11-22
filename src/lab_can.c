@@ -41,7 +41,7 @@ struct bus_state {
 	atomic_t errors;
 	atomic_t progress;
 	atomic_t completed_status;
-	bool started;
+	atomic_t started;
 };
 static struct bus_state buses[2] = {
 	{.dev = DEVICE_DT_GET(DT_ALIAS(can_a))},
@@ -133,14 +133,14 @@ static bool restart(struct bus_state *bus)
 	int rc = can_stop(bus->dev);
 
 	if (rc != 0 && rc != -EALREADY) {
-		bus->started = false;
+		atomic_set(&bus->started, 0);
 		return false;
 	}
 	/* stop completes abort callbacks before a new frame can reuse the slot. */
 	k_sem_reset(&bus->done);
 	rc = can_start(bus->dev);
-	bus->started = rc == 0 || rc == -EALREADY;
-	return bus->started;
+	atomic_set(&bus->started, rc == 0 || rc == -EALREADY);
+	return atomic_get(&bus->started) != 0;
 }
 
 /** @brief Own one hardware TX slot and controller recovery independently per bus.
@@ -158,7 +158,7 @@ static void tx_worker(void *a, void *b, void *c)
 
 	while (true) {
 		atomic_inc(&bus->progress);
-		if (!bus->started && !restart(bus)) {
+		if (!atomic_get(&bus->started) && !restart(bus)) {
 			atomic_inc(&bus->errors);
 			k_msleep(20);
 			continue;
@@ -276,7 +276,7 @@ int lab_can_init(void)
 		if (rc != 0) {
 			return rc;
 		}
-		bus->started = true;
+		atomic_set(&bus->started, 1);
 	}
 	for (int i = 0; i < 2; i++) {
 		k_tid_t tid = k_thread_create(&buses[i].thread, tx_stacks[i], TX_STACK,
@@ -346,7 +346,7 @@ void lab_can_link_state(int bus, int *state, int *tx_errors, int *rx_errors)
 	*state = -1;
 	*tx_errors = -1;
 	*rx_errors = -1;
-	if (bus < 0 || bus > 1 || !buses[bus].started) {
+	if (bus < 0 || bus > 1 || !atomic_get(&buses[bus].started)) {
 		return;
 	}
 	if (can_get_state(buses[bus].dev, &current, &errors) != 0) {
@@ -375,7 +375,7 @@ bool lab_can_link_healthy(int bus)
 	 * Hearing a frame is decisive in both directions and is what the Pi has
 	 * always used: every live node heartbeats on both buses every 20 ms.
 	 */
-	if (bus < 0 || bus > 1 || !buses[bus].started || !atomic_get(&heard[bus])) {
+	if (bus < 0 || bus > 1 || !atomic_get(&buses[bus].started) || !atomic_get(&heard[bus])) {
 		return false;
 	}
 	uint32_t age = k_uptime_get_32() - (uint32_t)atomic_get(&last_rx_ms[bus]);

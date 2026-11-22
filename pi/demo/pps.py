@@ -1,32 +1,14 @@
-"""Pulse per second on the Pi, scheduled against absolute deadlines.
+"""Software PPS following the same global timeline used for reference frames.
 
-The STM32 nodes drive their edge from a TIM5 output compare, so no instruction
-runs at the edge and the measured spread between them is about 20 microseconds.
-The Pi cannot match that. It has no hardware comparator reachable from Python,
-so the edge is produced by a thread that sleeps to an absolute deadline and then
-writes a GPIO, and whatever the kernel adds between the wakeup and that write
-lands directly on the edge.
-
-Three things keep that as small as it can reasonably be:
-
-- ``clock_nanosleep`` with ``TIMER_ABSTIME`` rather than a relative ``sleep``.
-  A relative sleep accumulates the time spent computing the next deadline into
-  the deadline itself; an absolute one cannot drift, and a late wakeup is
-  absorbed rather than carried forward.
-- ``CLOCK_REALTIME``, the same clock the cockpit stamps into REF, so the edge
-  and the reference message cannot disagree about when a second begins.
-- ``SCHED_FIFO`` on this thread alone, so an ordinary task cannot preempt the
-  wakeup. Requires privilege; without it the thread still runs and the jitter is
-  simply worse, which is reported rather than hidden.
-
-Measuring this is the point, not decorating it. The thread records the error
-between the deadline it asked for and the clock reading immediately after the
-GPIO write, and :meth:`Pps.stats` reports it. That number is the honest answer
-to why the uplink node cannot be a time reference of the same quality as the
-microcontrollers it synchronizes.
+Absolute sleeps handle the final local wait; bounded sleeps refresh the mapping
+when a follower receives new references. Linux scheduling and GPIO-write latency
+still affect the edge and must be measured on the target. Real-time scheduling
+is optional, and missing libc functions fall back to ordinary sleeping.
 """
 import ctypes
 import ctypes.util
+import errno
+from collections import deque
 import os
 import threading
 import time
@@ -67,7 +49,7 @@ class Pps:
     """Emit one rising edge per whole second of the master clock."""
 
     def __init__(self, pins, pin, enabled=True, priority=80, period_us=PERIOD_US,
-                 pulse_us=PULSE_US):
+                 pulse_us=PULSE_US, clock_us=None, report=None):
         """Prepare the pulse thread without starting it.
 
         :param pins: Object with set(pin, level), normally cockpit's Pins.
@@ -77,6 +59,8 @@ class Pps:
         :param period_us: Pulse period; only the tests use anything but a second.
         :param pulse_us: How long the pulse stays high.
         """
+        self.clock_us = clock_us or (lambda: time.time_ns() // 1000)
+        self.report = report
         self.pins = pins
         self.pin = pin
         self.period_us = period_us
@@ -89,7 +73,7 @@ class Pps:
         self.lock = threading.Lock()
         self.realtime = False
         self.edges = 0
-        self.errors_us = []
+        self.errors_us = deque(maxlen=10000)
 
     def _sleep_until(self, deadline_us):
         """Sleep to an absolute deadline on CLOCK_REALTIME.
@@ -97,7 +81,7 @@ class Pps:
         :param deadline_us: Deadline in microseconds since the epoch.
         :return: True when clock_nanosleep was used, False on the fallback.
         """
-        if self.libc is None:
+        if self.libc is None or not hasattr(self.libc, "clock_nanosleep"):
             remaining = deadline_us - time.clock_gettime_ns(time.CLOCK_REALTIME) // 1000
             if remaining > 0:
                 time.sleep(remaining / 1e6)
@@ -105,18 +89,24 @@ class Pps:
         target = _Timespec(tv_sec=deadline_us // 1000000,
                            tv_nsec=(deadline_us % 1000000) * 1000)
         # A signal can return EINTR early, so finish the deadline before going on.
-        while self.libc.clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME,
-                                        ctypes.byref(target), None) != 0:
-            if self.stop.is_set():
-                break
-        return True
+        while not self.stop.is_set():
+            rc = self.libc.clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME,
+                                           ctypes.byref(target), None)
+            if rc == 0:
+                return True
+            if rc != errno.EINTR:
+                remaining = deadline_us - time.time_ns() // 1000
+                if remaining > 0:
+                    self.stop.wait(remaining / 1e6)
+                return False
+        return False
 
     def _request_realtime(self):
         """Ask for SCHED_FIFO on the calling thread.
 
         :return: True when the policy was granted.
         """
-        if self.libc is None:
+        if self.libc is None or not hasattr(self.libc, "sched_setscheduler"):
             return False
         param = _SchedParam(sched_priority=self.priority)
         # Thread id zero means the calling thread.
@@ -125,21 +115,35 @@ class Pps:
     def _run(self):
         """Drive the pulse until stopped."""
         self.realtime = self._request_realtime()
+        last_target = 0
         while not self.stop.is_set():
-            now_us = time.clock_gettime_ns(time.CLOCK_REALTIME) // 1000
-            deadline = (now_us // self.period_us + 1) * self.period_us
-            self._sleep_until(deadline)
+            now_us = self.clock_us()
+            deadline = max(last_target + self.period_us,
+                           (now_us // self.period_us + 1) * self.period_us)
+            # Refresh the global-to-local mapping until near the edge: a
+            # follower's newest REF can refine its phase while we wait.
+            while not self.stop.is_set():
+                remaining = deadline - self.clock_us()
+                if remaining <= 0:
+                    break
+                if remaining > 2000:
+                    self.stop.wait(min((remaining - 1000) / 1e6, .01))
+                else:
+                    self._sleep_until(time.time_ns() // 1000 + remaining)
             if self.stop.is_set():
                 break
             self.pins.set(self.pin, True)
-            # Read the clock straight after the write: the gap between this and
-            # the deadline is the edge error, and it is the whole measurement.
-            actual = time.clock_gettime_ns(time.CLOCK_REALTIME) // 1000
+            actual = self.clock_us()
+            local = time.perf_counter_ns() // 1000
             with self.lock:
                 self.edges += 1
                 self.errors_us.append(actual - deadline)
-            self._sleep_until(deadline + self.pulse_us)
+            last_target = deadline
+            # Pulse width is local elapsed time, independent of corrections.
+            self.stop.wait(self.pulse_us / 1e6)
             self.pins.set(self.pin, False)
+            if self.report is not None:
+                self.report(actual, local, actual - deadline)
 
     def start(self):
         """Begin emitting edges."""

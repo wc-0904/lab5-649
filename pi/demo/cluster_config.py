@@ -87,6 +87,13 @@ def load(path=None):
         raise ConfigError("N is %d but nodes lists %d entries"
                           % (config["N"], len(config["nodes"])))
 
+    if config["N"] != 3:
+        raise ConfigError("this CAN protocol supports exactly three nodes")
+    if not 1 <= config["log_size"] <= 30000:
+        raise ConfigError("log_size must be 1..30000")
+    if config["missed_heartbeats"] == 0:
+        raise ConfigError("missed_heartbeats must be nonzero")
+
     config["Debug"] = values["Debug"].strip().lower() in ("yes", "true", "1", "on")
 
     leader = values["default_leader"].strip()

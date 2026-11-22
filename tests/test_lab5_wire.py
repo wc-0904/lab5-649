@@ -349,7 +349,7 @@ class AgentTests(unittest.TestCase):
         reply = agent.on_client_request(3, client_encode(event_link(3, 1, False), 7))
         self.assertIsNotNone(reply)
         can_id, data = reply
-        self.assertEqual(can_id, LAB5_CLIENT_REDIRECT)
+        self.assertEqual(can_id, LAB5_CLIENT_REDIRECT + agent.node_id)
         decoded = reply_decode(data)
         self.assertEqual(decoded["result"], REPLY_REDIRECT)
         self.assertEqual(decoded["leader"], 1)
@@ -362,7 +362,11 @@ class AgentTests(unittest.TestCase):
         from network_state import event_link, event_name
         from raft_agent import REPLY_COMMITTED, client_encode, reply_decode
         agent, _ = self.agent("cockpit")
-        _, data = agent.on_client_request(2, client_encode(event_link(2, 1, False), 4))
+        request = client_encode(event_link(2, 1, False), 4)
+        self.assertIsNone(agent.on_client_request(2, request))
+        from raft_agent import ack_encode
+        agent.on_ack(3, ack_encode(agent.term, 1, 0))
+        _, data = agent.on_client_request(2, request)
         decoded = reply_decode(data)
         self.assertEqual(decoded["result"], REPLY_COMMITTED)
         self.assertEqual((decoded["request"], decoded["index"]), (4, 1))
@@ -376,6 +380,10 @@ class AgentTests(unittest.TestCase):
         from raft_agent import client_encode, reply_decode
         agent, _ = self.agent("cockpit")
         request = client_encode(event_link(2, 1, False), 4)
+        self.assertIsNone(agent.on_client_request(2, request))
+        self.assertIsNone(agent.on_client_request(2, request))
+        from raft_agent import ack_encode
+        agent.on_ack(3, ack_encode(agent.term, 1, 0))
         first = reply_decode(agent.on_client_request(2, request)[1])
         second = reply_decode(agent.on_client_request(2, request)[1])
         self.assertEqual(first["index"], second["index"])
@@ -387,6 +395,10 @@ class AgentTests(unittest.TestCase):
         from network_state import event_link
         from raft_agent import client_encode, reply_decode
         agent, _ = self.agent("cockpit")
+        from raft_agent import ack_encode
+        agent.on_client_request(2, client_encode(event_link(2, 1, True), 1))
+        agent.on_client_request(3, client_encode(event_link(3, 1, True), 1))
+        agent.on_ack(2, ack_encode(agent.term, 2, 0))
         a = reply_decode(agent.on_client_request(2, client_encode(event_link(2, 1, True), 1))[1])
         b = reply_decode(agent.on_client_request(3, client_encode(event_link(3, 1, True), 1))[1])
         self.assertEqual((a["node"], a["request"]), (2, 1))

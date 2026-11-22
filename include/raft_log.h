@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /** @file raft_log.h
- * @brief Replicated log: entries of (term, index, event), stored as a ring.
+ * @brief Replicated log with bounded, compact storage and implicit indices.
  *
  * Pure C with no Zephyr dependency, so the same code is exercised by the host
  * tests. The index of an entry is implied by its position, so only the term and
- * the event are stored, two bytes per entry.
+ * the event are stored, thirteen bits per entry.
  */
 #ifndef RAFT_LOG_H_
 #define RAFT_LOG_H_
@@ -26,19 +26,19 @@ enum raft_event {
 	RAFT_LINK_UP_BASE = 0x20,
 	RAFT_LINK_DOWN_BASE = 0x28,
 };
-/** @brief Entries each node keeps in RAM.
- *
- * The configured log_size is 30000, which at any sane encoding exceeds the
- * F401RE's 96 KB of SRAM, so the STM32 keeps a bounded window of the most
- * recent entries and the Pi keeps the whole log. See TASKS.md D7. At two bytes
- * per entry this ring costs 8 KB.
- */
-#define RAFT_LOG_RING 4096
-/** @brief One stored entry; its index is its position in the log. */
+/** @brief Retain the configured history without discarding committed state. */
+#ifdef __ZEPHYR__
+#include "cluster_config.h"
+#define RAFT_LOG_RING LAB5_CFG_LOG_SIZE
+#else
+#define RAFT_LOG_RING 30000
+#endif
+/** @brief Decoded log entry. */
 struct raft_entry { uint8_t term; uint8_t event; };
-/** @brief Log state. Treat as opaque; use the functions below. */
+/** @brief Eight term bits and five event bits per entry: 48,750 bytes for 30,000. */
 struct raft_log {
-	struct raft_entry ring[RAFT_LOG_RING];
+	uint8_t terms[RAFT_LOG_RING];
+	uint8_t events[(RAFT_LOG_RING * 5 + 7) / 8];
 	uint32_t first;
 	uint32_t count;
 };
@@ -66,12 +66,11 @@ const char *raft_event_name(uint8_t event);
 void raft_log_init(struct raft_log *log);
 /** @brief Append one entry.
  *
- * When the ring is full the oldest entry is dropped and the first retained
- * index advances, which is the documented STM32 deviation from log_size.
+ * A full log refuses additional writes; it never discards committed history.
  * @param log Log to append to.
  * @param term Term the entry was created in.
  * @param event Encoded event.
- * @return Index assigned to the new entry; the first entry is index 1.
+ * @return Index assigned, or zero when full; the first entry is index 1.
  */
 uint32_t raft_log_append(struct raft_log *log, uint8_t term, uint8_t event);
 /** @brief Index of the newest entry.

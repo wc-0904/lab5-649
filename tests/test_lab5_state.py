@@ -231,14 +231,14 @@ class StateMachineTests(unittest.TestCase):
         self.assertEqual(self.assert_same(events),
                          "net nodes=C.. links=1..... mode=OK")
 
-    def test_ring_drops_the_oldest_entry_and_advances_the_first_index(self):
-        # One more than the ring, so index 1 is gone and replay starts at 2.
+    def test_full_log_preserves_all_committed_history(self):
+        # An extra write must not destroy the state established by index 1.
         events = [event_node(1, True)] + [COCKPIT_OK] * LOG_RING
         rendered, first, last = self.c_replay(events)
-        self.assertEqual((first, last), (2, LOG_RING + 1))
+        self.assertEqual((first, last), (1, LOG_RING))
         self.assertEqual(self.py_replay(events), (rendered, first, last))
-        # The dropped NODE_cockpit_UP is no longer reflected in the graph.
-        self.assertEqual(rendered, "net nodes=... links=...... mode=OK")
+        # The original NODE_cockpit_UP remains reflected in the graph.
+        self.assertEqual(rendered, "net nodes=C.. links=...... mode=OK")
 
     @staticmethod
     def widen(offers):
@@ -358,15 +358,15 @@ class StateMachineTests(unittest.TestCase):
         self.assertEqual(outcomes[1], (APPEND_MISSING, 1))
         self.assertEqual(last, 1)
 
-    def test_a_conflicting_tail_is_dropped(self):
+    def test_a_rejected_previous_term_keeps_the_tail(self):
         # Store index 1 in term 1, then a leader in term 2 disagrees about it.
         offers = [(1, 1, 0, 0, 1, event_node(1, True)),
                   (1, 1, 1, 1, 1, event_node(2, True)),
                   (2, 2, 1, 2, 1, event_node(3, True))]
         outcomes, _, last = self.assert_accept_same(offers)
         self.assertEqual(outcomes[2][0], APPEND_MISMATCH)
-        # Index 1 disagreed, so everything from there is gone.
-        self.assertEqual(last, 0)
+        # A rejected RPC must not mutate either entry.
+        self.assertEqual(last, 2)
 
     def test_resending_the_same_entry_is_idempotent(self):
         # Every frame goes out on both buses and may also arrive relayed.

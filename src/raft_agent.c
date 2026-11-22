@@ -11,7 +11,6 @@
 #include "election.h"
 #include "time_sync.h"
 #include "pps.h"
-#include "time_sync.h"
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <time.h>
@@ -94,6 +93,7 @@ static struct {
 	enum raft_role role;
 	uint32_t term;
 	int leader;
+	int client_leader;
 	bool synced;
 	bool have_cycle;
 	uint16_t cycle;
@@ -139,6 +139,7 @@ static struct {
 	 * times as a matter of course.
 	 */
 	uint16_t client_request[LAB5_CFG_N + 1];
+	uint8_t client_event[LAB5_CFG_N + 1];
 	uint16_t client_index[LAB5_CFG_N + 1];
 	bool client_answered[LAB5_CFG_N + 1];
 	/* Cockpit liveness, which only the leader records. */
@@ -213,6 +214,17 @@ void raft_agent_init(void)
 		       state.role == RAFT_LEADER ? "LEADER" : "FOLLOWER",
 		       lab_node_name(state.leader));
 	}
+}
+
+void raft_agent_suspend(void)
+{
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+
+	state.role = RAFT_FOLLOWER;
+	state.leader = 0;
+	state.votes = 0;
+	state.last_contact_ms = k_uptime_get();
+	k_spin_unlock(&state_lock, key);
 }
 
 /** @brief Report the current role.
@@ -315,6 +327,13 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us, uint32_t local_cycles
 
 	k_spinlock_key_t key = k_spin_lock(&state_lock);
 
+	if (ref.master < 1 || ref.master > LAB5_CFG_N ||
+	    ref.master == LAB_NODE_ID || state.role == RAFT_LEADER ||
+	    (state.leader != 0 && state.leader != ref.master)) {
+		k_spin_unlock(&state_lock, key);
+		return;
+	}
+
 	/*
 	 * A different master makes the counter meaningless: it is that node's
 	 * own, starting wherever it starts. Checking the identity is exact,
@@ -389,6 +408,9 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us, uint32_t local_cycles
 	 * in the dispatch thread and so carries the queue wait, while the cycle
 	 * count was taken in the receive callback (TASKS.md D17).
 	 */
+	time_sync_set_delay_us((ref.master == LAB_NODE_COCKPIT ?
+		LAB5_DELAY_COCKPIT_US : LAB5_DELAY_STM32_US) +
+		(relayed ? LAB5_RELAY_DELAY_US : 0U));
 	time_sync_on_ref(ref.master_us, local_cycles);
 	if (copy) {
 		return;
@@ -396,23 +418,8 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us, uint32_t local_cycles
 	lab_io_toggle(LAB_REF_RX);
 	if (first) {
 		lab_io_set(LAB_SYNC, true);
-		set_system_clock(ref.master_us);
+		set_system_clock(time_sync_global_us(pps_now()));
 	}
-	/*
-	 * The delay belongs to the master's transmit path, so it has to follow
-	 * the master. Setting it on every reference rather than only on a
-	 * change costs one store and cannot be forgotten at a handover.
-	 *
-	 * A relayed reference is delayed further still: queued by the bridging
-	 * node, picked up by a separate thread, and retransmitted on the other
-	 * bus. That is a second delay in series with the master's own, not a
-	 * replacement for it, so it is added rather than substituted. Measured
-	 * on the bench as 1.966 ms of FL/RL skew in the exact two-link-pulled
-	 * topology checkoff step 5 builds (TASKS.md D18, D24).
-	 */
-	time_sync_set_delay_us((raft_leader() == LAB_NODE_COCKPIT ?
-				LAB5_DELAY_COCKPIT_US : LAB5_DELAY_STM32_US) +
-			       (relayed ? LAB5_RELAY_DELAY_US : 0U));
 	if (!LAB5_CFG_DEBUG) {
 		return;
 	}
@@ -556,7 +563,13 @@ static bool advance_commit(void)
 	if (state.commit_index == before) {
 		return false;
 	}
-	network_replay(&state.net, &state.log, state.commit_index);
+	for (uint32_t index = before + 1; index <= state.commit_index; index++) {
+		struct raft_entry entry;
+
+		if (raft_log_get(&state.log, index, &entry)) {
+			network_apply(&state.net, entry.event);
+		}
+	}
 	return true;
 }
 
@@ -733,10 +746,12 @@ void raft_append_tx(int64_t now_ms)
 		 * already holds idempotently, so a turn spent on one does no
 		 * harm to the others.
 		 */
+		int peer = state.append_peer;
+
 		do {
-			state.append_peer = state.append_peer % LAB5_CFG_N + 1;
-		} while (state.append_peer == LAB_NODE_ID);
-		nxt = state.next_index[state.append_peer];
+			peer = peer % LAB5_CFG_N + 1;
+		} while (peer == LAB_NODE_ID);
+		nxt = state.next_index[peer];
 		if (nxt < 1) {
 			nxt = 1;
 		}
@@ -759,6 +774,7 @@ void raft_append_tx(int64_t now_ms)
 				header.entry_term = entry.term;
 				header.event = entry.event;
 			}
+			state.append_peer = peer;
 			state.last_append_ms = now_ms;
 			send = true;
 		}
@@ -790,8 +806,13 @@ void raft_on_ack(const uint8_t data[8], int from)
 		k_spin_unlock(&state_lock, key);
 		return;
 	}
-	if (state.role != RAFT_LEADER || from < 1 || from > LAB5_CFG_N ||
+	if (ack.term != state.term || state.role != RAFT_LEADER ||
+	    from < 1 || from > LAB5_CFG_N ||
 	    from == LAB_NODE_ID) {
+		k_spin_unlock(&state_lock, key);
+		return;
+	}
+	if (ack.match_index > raft_log_last_index(&state.log)) {
 		k_spin_unlock(&state_lock, key);
 		return;
 	}
@@ -823,6 +844,9 @@ void raft_on_ack(const uint8_t data[8], int from)
 		 * protocol already carries rather than adding a new field.
 		 */
 		state.next_index[from] = (uint32_t)ack.match_index + 1;
+		if (state.match_index[from] > ack.match_index) {
+			state.match_index[from] = ack.match_index;
+		}
 	}
 	k_spin_unlock(&state_lock, key);
 
@@ -854,7 +878,8 @@ void raft_on_client_request(const uint8_t data[8], int from)
 		uint32_t index;
 
 		if (state.client_answered[from] &&
-		    state.client_request[from] == request.request) {
+		    state.client_request[from] == request.request &&
+		    state.client_event[from] == request.event) {
 			/*
 			 * Already recorded. Answer again with the same index
 			 * rather than appending a second copy: appending it
@@ -866,10 +891,15 @@ void raft_on_client_request(const uint8_t data[8], int from)
 			index = raft_log_append(&state.log, (uint8_t)state.term,
 						request.event);
 			state.client_request[from] = request.request;
+			state.client_event[from] = request.event;
 			state.client_index[from] = (uint16_t)index;
 			state.client_answered[from] = true;
 		}
 		state.match_index[LAB_NODE_ID] = raft_log_last_index(&state.log);
+		if (index == 0 || index > state.commit_index) {
+			k_spin_unlock(&state_lock, key);
+			return;
+		}
 		reply.result = LAB5_REPLY_COMMITTED;
 		reply.leader = (uint8_t)LAB_NODE_ID;
 		reply.index = (uint16_t)index;
@@ -886,7 +916,7 @@ void raft_on_client_request(const uint8_t data[8], int from)
 		return;
 	}
 	lab5_reply_encode(out, &reply);
-	lab_can_send_lab5(LAB5_CLIENT_REDIRECT, out);
+	lab_can_send_lab5(lab5_id_for(LAB5_CLIENT_REDIRECT, LAB_NODE_ID), out);
 }
 
 /** @brief Start an election if nothing has been heard from a leader.
@@ -918,6 +948,12 @@ void raft_election_tick(int64_t now_ms, bool hearing)
 		state.last_contact_ms = now_ms;
 	} else if (state.role != RAFT_LEADER &&
 	    now_ms - state.last_contact_ms >= (int64_t)state.timeout_ms) {
+		/* Terms are eight bits on the wire; never wrap into an old term. */
+		if (state.term >= UINT8_MAX) {
+			state.last_contact_ms = now_ms;
+			k_spin_unlock(&state_lock, key);
+			return;
+		}
 		state.term++;
 		state.role = RAFT_CANDIDATE;
 		state.leader = 0;
@@ -1080,6 +1116,7 @@ bool raft_ref_tx(void)
 	if (raft_role() != RAFT_LEADER) {
 		return false;
 	}
+	time_sync_holdover(pps_now());
 	master_us = time_sync_global_us(pps_now());
 	if (master_us == 0) {
 		/* Never synchronized: fall back to local time so the cluster
@@ -1188,13 +1225,19 @@ void raft_on_append(const uint8_t data[8])
 	stored = raft_log_last_index(&state.log);
 	grew = stored > before;
 	if (result == RAFT_APPEND_ACCEPTED) {
-		/* Commit no further than what we actually hold. */
-		uint32_t limit = raft_log_last_index(&state.log);
+		/* Only this RPC's matched prefix is proven to belong to the leader. */
+		uint32_t limit = match;
 		uint32_t target = header.commit < limit ? header.commit : limit;
 
 		if (target > state.commit_index) {
+			for (uint32_t index = state.commit_index + 1; index <= target; index++) {
+				struct raft_entry entry;
+
+				if (raft_log_get(&state.log, index, &entry)) {
+					network_apply(&state.net, entry.event);
+				}
+			}
 			state.commit_index = target;
-			network_replay(&state.net, &state.log, state.commit_index);
 			advanced = true;
 		}
 	}
@@ -1403,7 +1446,9 @@ void raft_client_poll(int64_t now_ms)
 		recorded = event;
 		state.self_index = local;
 		state.match_index[LAB_NODE_ID] = raft_log_last_index(&state.log);
-		state.pending_event = RAFT_EVENT_NONE;
+		if (local != 0) {
+			state.pending_event = RAFT_EVENT_NONE;
+		}
 		event = RAFT_EVENT_NONE;
 	}
 	k_spin_unlock(&state_lock, key);
@@ -1458,7 +1503,7 @@ void raft_on_reply(const uint8_t data[8])
 		}
 	}
 	if (reply.node == LAB_NODE_ID && redirect && reply.leader != 0) {
-		state.leader = reply.leader;
+		state.client_leader = reply.leader;
 	}
 	k_spin_unlock(&state_lock, key);
 

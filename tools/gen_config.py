@@ -49,7 +49,7 @@ def emit(config, source):
         "#define LAB5_CFG_ELECTION_MIN_MS %d" % config["election_min_ms"],
         "/** @brief Longest election timeout in milliseconds. */",
         "#define LAB5_CFG_ELECTION_MAX_MS %d" % config["election_max_ms"],
-        "/** @brief Logical log capacity; the STM32 ring is smaller, see TASKS.md D7. */",
+        "/** @brief Retained log capacity on every node. */",
         "#define LAB5_CFG_LOG_SIZE %d" % config["log_size"],
         "/** @brief Print election and append messages when nonzero. */",
         "#define LAB5_CFG_DEBUG %d" % (1 if config["Debug"] else 0),

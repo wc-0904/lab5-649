@@ -31,7 +31,8 @@ static void banner(void)
 	       lab5_id_for(LAB5_REQ_VOTE_BASE, LAB_NODE_ID));
 	printk("can     VOTE=0x%03x CLIENT=0x%03x REDIRECT=0x%03x filter=0x%03x/0x%03x\n",
 	       lab5_id_for(LAB5_VOTE_BASE, LAB_NODE_ID),
-	       lab5_id_for(LAB5_CLIENT_REQ_BASE, LAB_NODE_ID), LAB5_CLIENT_REDIRECT,
+	       lab5_id_for(LAB5_CLIENT_REQ_BASE, LAB_NODE_ID),
+	       lab5_id_for(LAB5_CLIENT_REDIRECT, LAB_NODE_ID),
 	       LAB5_FILTER_ID, LAB5_FILTER_MASK);
 }
 

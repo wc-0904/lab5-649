@@ -22,7 +22,7 @@ from time_sync import local_cycles as local_cycles_now
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "part0"))
 from can_check import discover
 from cluster_config import load as load_cluster_config, node_id as cluster_node_id
-from raft_agent import ISOLATION_WINDOW, RaftAgent
+from raft_agent import FOLLOWER, ISOLATION_WINDOW, RaftAgent
 from network_state import event_link, event_node
 from protocol import APPEND_ACK_BASE as _ACK, CLIENT_REQ_BASE, lab5_id_for
 
@@ -98,7 +98,8 @@ class Cockpit:
         # The Pi is the default time master, so its edge is the baseline every
         # STM32 edge is compared against. It is also the worst edge in the
         # cluster, for reasons pps.py documents.
-        self.pps = Pps(self.pins, Pins.PPS, enabled=not args.no_gpio and not args.no_pps)
+        self.pps = Pps(self.pins, Pins.PPS, enabled=not args.no_gpio and not args.no_pps,
+                       clock_us=lambda: self.agent.global_us(), report=self.pps_report)
         self.selector = selectors.DefaultSelector()
         self.can = []
         for bus, name in discover().items():
@@ -191,7 +192,9 @@ class Cockpit:
             relay rather than directly, which adds a second one way delay and
             must be compensated separately (TASKS.md D18).
         """
-        if can_id == LAB5_CLIENT_REDIRECT:
+        if self.local_fail:
+            return
+        if LAB5_CLIENT_REDIRECT < can_id <= LAB5_CLIENT_REDIRECT + self.cluster["N"]:
             # The leader's answer to one of this node's own requests.
             self.agent.on_reply(data)
             return
@@ -247,7 +250,9 @@ class Cockpit:
         trivially synchronized; P9 extends SYNC to track a remote master.
         """
         self.pins.set(Pins.LEADER, self.agent.is_leader())
-        self.pins.set(Pins.SYNC, self.agent.is_leader())
+        fresh = (self.agent.refs_received > 0 and
+                 time.monotonic() - self.agent.last_ref < self.agent.election_base_ms / 1000)
+        self.pins.set(Pins.SYNC, self.agent.is_leader() or fresh)
 
     def send_lab5(self, can_id, data):
         """Send a Lab 5 frame on both buses with the payload untouched.
@@ -279,6 +284,10 @@ class Cockpit:
             return
         self.recovery_press = None
         self.local_fail = True
+        self.agent.role = FOLLOWER
+        self.agent.leader = 0
+        self.agent.votes.clear()
+        self.agent.last_contact = now
         self.error = True
         if now - self.last_fault >= .020:
             self.send(FAULT, bytes((1, reason)))
@@ -353,6 +362,7 @@ class Cockpit:
     def receive(self, bus, now):
         """Record per-bus reachability, suppress copies, and bridge foreign traffic."""
         raw = self.can[bus].recv(16)
+        received_cycles = local_cycles_now()
         self.last_rx[bus] = now
         if len(raw) != 16:
             self.bad_frames += 1
@@ -379,7 +389,7 @@ class Cockpit:
             # would otherwise be counted as malformed. The counter is read here
             # rather than inside receive_lab5 so the sync instant is as close to
             # the socket read as Python allows (TASKS.md D17).
-            self.receive_lab5(base_id, data, now, local_cycles_now(),
+            self.receive_lab5(base_id, data, now, received_cycles,
                               is_relayed(can_id))
             return
         if not valid(can_id, data):
@@ -394,7 +404,7 @@ class Cockpit:
             if peer not in self.seen_nodes:
                 # First sight of a peer: record it so the graph is not empty.
                 self.seen_nodes.add(peer)
-                self.agent.client_append(event_node(peer, True))
+                # The peer reports its own NODE_UP before its link reports.
         if self.dedup.duplicate(can_id, data, bus, now):
             return
         self.forward(can_id, data, bus)
@@ -460,6 +470,13 @@ class Cockpit:
         """
         return (self.agent.global_us() // BLINK_HALF_US) % 2 == 1
 
+    def pps_report(self, global_us, local_us, error_us):
+        """Print the measured global and local clocks for each PPS edge."""
+        if self.cluster["Debug"]:
+            print(f"pps: global={global_us // 1000000}.{global_us % 1000000:06d} "
+                  f"local={local_us} error={error_us:+d} us "
+                  f"ratio={self.agent.sync.ppm()} ppm", flush=True)
+
     def drift_report(self):
         """Print the global time and the drift the timeline is correcting for.
 
@@ -502,20 +519,21 @@ class Cockpit:
                         self.send(HB1, bytes((int(self.error), health)))
                     next_hb = now + .020
                 self.blink_tx(now)
-                hearing = any(now - t < ISOLATION_WINDOW for t in self.last_rx)
-                if self.agent.election_tick(now, hearing):
-                    self.show_raft_state()
-                event = self.agent.poll_links(self.last_rx, now)
-                if event is not None:
-                    self.agent.link_event = event
-                self.agent.client_tick(now)
-                # This node is the cockpit, so while it leads the answer is
-                # always yes; the other direction is recorded by whoever
-                # replaces it.
-                self.agent.report_cockpit(True)
-                self.agent.peer_tick(now, hearing)
-                self.agent.ref_tx(now)
-                self.agent.append_tx(now)
+                if not self.local_fail:
+                    hearing = any(now - t < ISOLATION_WINDOW for t in self.last_rx)
+                    if self.agent.election_tick(now, hearing):
+                        self.show_raft_state()
+                    event = self.agent.poll_links(self.last_rx, now)
+                    if event is not None:
+                        self.agent.link_event = event
+                    self.agent.client_tick(now)
+                    # This node is the cockpit, so while it leads the answer is
+                    # always yes; the other direction is recorded by whoever
+                    # replaces it.
+                    self.agent.report_cockpit(True)
+                    self.agent.peer_tick(now, hearing)
+                    self.agent.ref_tx(now)
+                    self.agent.append_tx(now)
                 if now >= next_drift:
                     self.drift_report()
                     next_drift = now + 1.0

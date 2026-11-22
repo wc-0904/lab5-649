@@ -304,14 +304,33 @@ uint64_t time_sync_global_us(uint32_t now_cycles)
 	uint64_t global = 0;
 
 	if (state.have_last) {
-		uint64_t since = time_sync_cycles_to_us(now_cycles - state.last_cycles);
+		/* A timestamp captured before preemption can precede the newest
+		 * REF. Signed subtraction avoids treating that as a 71-minute gap.
+		 */
+		int64_t since = (int64_t)(int32_t)(now_cycles - state.last_cycles) *
+			1000000 / tick_hz;
 
-		global = state.base_us +
-			(((uint64_t)since * (uint32_t)state.ratio) >>
-			 TIME_SYNC_RATIO_SHIFT);
+		global = (uint64_t)((int64_t)state.base_us +
+			((since * state.ratio) >> TIME_SYNC_RATIO_SHIFT));
 	}
 	k_spin_unlock(&lock, key);
 	return global;
+}
+
+void time_sync_holdover(uint32_t now_cycles)
+{
+	k_spinlock_key_t key = k_spin_lock(&lock);
+
+	if (state.have_last &&
+	    (int32_t)(now_cycles - state.last_cycles) >= (int32_t)tick_hz) {
+		int64_t since = (int64_t)(int32_t)(now_cycles - state.last_cycles) *
+			1000000 / tick_hz;
+
+		state.base_us = (uint64_t)((int64_t)state.base_us +
+			((since * state.ratio) >> TIME_SYNC_RATIO_SHIFT));
+		state.last_cycles = now_cycles;
+	}
+	k_spin_unlock(&lock, key);
 }
 
 /** @brief Read the smoothed drift ratio in Q16.16.

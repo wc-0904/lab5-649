@@ -340,7 +340,7 @@ class ElectionStateTests(unittest.TestCase):
         from raft_agent import ref_encode
         h = self.agent(2, leader=3)
         h.agent.last_contact = 0.0
-        h.agent.on_ref(ref_encode(2000000000000000, 0), 0)
+        h.agent.on_ref(ref_encode(2000000000000000, 0, master=3), 0)
         self.assertGreater(h.agent.last_contact, 0.0)
 
     def test_each_round_draws_a_fresh_timeout(self):
@@ -545,7 +545,8 @@ class SelfReportTests(unittest.TestCase):
         h.agent.client_tick(0.0)
         h.agent.on_reply(reply_encode(REPLY_REDIRECT, 3,
                                       h.agent.pending_request, 0, 2))
-        self.assertEqual(h.agent.leader, 3)
+        self.assertEqual(h.agent.client_leader, 3)
+        self.assertEqual(h.agent.leader, 1)
         self.assertIsNotNone(h.agent.pending_event)
 
     def test_stepping_down_requeues_the_self_reports(self):

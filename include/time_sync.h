@@ -56,6 +56,8 @@ void time_sync_set_tick_hz(uint32_t hz);
 void time_sync_assume_master(uint64_t master_us, uint32_t now_cycles);
 /** @brief Forget any master and return to the unsynchronized state. */
 void time_sync_reset(void);
+/** @brief Rebase a leader clock before its 32-bit local counter wraps. */
+void time_sync_holdover(uint32_t now_cycles);
 /** @brief Apply one reference message.
  * @param master_us Leader clock carried by the frame.
  * @param local_cycles Cycle counter captured when the frame was received.

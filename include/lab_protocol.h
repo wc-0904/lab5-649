@@ -26,6 +26,9 @@ enum lab_node { LAB_NODE_COCKPIT = 1, LAB_NODE_STEERING = 2, LAB_NODE_DRIVETRAIN
 enum lab5_id { LAB5_REF = 0x008, LAB5_APPEND = 0x040, LAB5_APPEND_ACK_BASE = 0x044,
 	LAB5_REQ_VOTE_BASE = 0x048, LAB5_VOTE_BASE = 0x04c,
 	LAB5_CLIENT_REQ_BASE = 0x050, LAB5_CLIENT_REDIRECT = 0x054 };
+/* CLIENT_REDIRECT is a per-sender base: replies use 0x055..0x057.
+ * Followers and leader can reply together, so they must arbitrate on unique IDs.
+ */
 /** @brief Masked filter covering every consensus ID in one RX filter slot.
  *
  * The MCP2515 driver offers 16 software filter slots and Lab 3 already uses

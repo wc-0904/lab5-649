@@ -73,8 +73,8 @@ LEADER, SYNC and HZ want an LED with its own series resistor like the existing
 ones. REF_RX and PPS are scope points; an LED on REF_RX is harmless but will
 only look dim, since it toggles at 25 Hz once REF runs at 20 ms.
 
-On the Pi the same five signals are software state; only PPS needs a physical
-pin, and which one is still open (TASKS.md D22).
+On the Pi PPS, LEADER and SYNC use the physical pins listed above.
+The Pi does not export separate REF_RX or HZ pins.
 
 PC0/PC1 are reliably identified on Arduino A5/A4; their Morpho routing can depend
 on solder bridges (as noted in Zephyr's board connector map). PA1 uses TIM2 CH2,

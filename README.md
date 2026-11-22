@@ -1,3 +1,7 @@
+> Lab 5 review/build/run instructions: [CODE_REVIEW.md](docs/CODE_REVIEW.md).
+> Use the `build-lab5-n2` / `build-lab5-n3` images and update the Pi together:
+> client replies now use per-sender IDs 0x055..0x057. The material below is inherited Lab 3 documentation.
+
 > October 22 clarification: use [the completion checklist](docs/LAB_COMPLETION_CHECKLIST.md)
 > for current normal/measurement builds, wiring, captures and recovery. The report
 > drafts have not been rewritten; their older FAULT catalog and RTA numbers need
