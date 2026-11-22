@@ -363,10 +363,17 @@ class SelfHealingTests(unittest.TestCase):
         h.agent.log.append(h.agent.term, event_link(1, 1, True))
         h.agent.commit_index = h.agent.log.last_index()
         h.agent.net.replay(h.agent.log, h.agent.commit_index)
-        # Bus B is missing from the graph, so it is marked for re-reporting.
-        h.agent.poll_links([10.0, 10.0], 10.0)
-        self.assertTrue(h.agent.link_down[1])
-        self.assertFalse(h.agent.link_down[0])
+        # Bus B is missing from the graph, so the poll re-reports it up.
+        event = h.agent.poll_links([10.0, 10.0], 10.0)
+        self.assertEqual(event, event_link(1, 2, True))
+        # It keeps saying so while the graph still disagrees, which is what
+        # makes the repair convergent rather than a single best effort.
+        self.assertEqual(h.agent.poll_links([10.1, 10.1], 10.1), event)
+        # Once the entry commits, the disagreement is gone and it falls silent.
+        h.agent.log.append(h.agent.term, event)
+        h.agent.commit_index = h.agent.log.last_index()
+        h.agent.net.replay(h.agent.log, h.agent.commit_index)
+        self.assertIsNone(h.agent.poll_links([10.2, 10.2], 10.2))
 
 
 if __name__ == "__main__":
