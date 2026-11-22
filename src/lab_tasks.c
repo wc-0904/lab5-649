@@ -723,8 +723,29 @@ static void monitor_task(void *a, void *b, void *c)
 		raft_election_tick(now);
 		raft_append_tx(now);
 		raft_client_poll(now);
+		/*
+		 * Cockpit liveness, on either bus. Reported to the agent before
+		 * the state lock is taken, because the agent holds its own and
+		 * the two must not nest.
+		 */
+		struct shared_state peek = snapshot();
+		bool cockpit = false;
+
+		for (int bus = 0; bus < 2; bus++) {
+			cockpit |= peek.seen[0][bus] &&
+				now - peek.heartbeat[0][bus] < LAB_TIMEOUT_MS;
+		}
+		raft_report_cockpit(cockpit);
+		/*
+		 * The committed log is the cluster's agreed view, so failure
+		 * mode holds the vehicle in the error state even when this
+		 * node's own inputs look fine.
+		 */
+		bool failure = raft_failure_mode();
+
 		k_spinlock_key_t key = k_spin_lock(&state_lock);
-		bool error = state.local_fail || !state.have_ctrl || now - state.ctrl_at >= 60;
+		bool error = failure || state.local_fail || !state.have_ctrl ||
+			now - state.ctrl_at >= 60;
 		state.degraded[0] = false;
 
 		state.degraded[1] = false;

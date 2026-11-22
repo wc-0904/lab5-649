@@ -473,6 +473,10 @@ class Cockpit:
                 if self.agent.election_tick(now):
                     self.show_raft_state()
                 self.agent.client_tick(now)
+                # This node is the cockpit, so while it leads the answer is
+                # always yes; the other direction is recorded by whoever
+                # replaces it.
+                self.agent.report_cockpit(True)
                 self.agent.ref_tx(now)
                 self.agent.append_tx(now)
                 if now >= next_drift:

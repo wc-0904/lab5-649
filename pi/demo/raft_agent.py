@@ -11,8 +11,8 @@ from protocol import (APPEND, APPEND_ACK_BASE, CLIENT_REQ_BASE,
                       CLIENT_REDIRECT as LAB5_CLIENT_REDIRECT, REF,
                       REQ_VOTE_BASE, VOTE_BASE, lab5_id_for)
 from election import Election
-from network_state import (APPEND_ACCEPTED, APPEND_RESULT_CODES, Network,
-                           RaftLog,
+from network_state import (APPEND_ACCEPTED, APPEND_RESULT_CODES, COCKPIT_ERROR,
+                           COCKPIT_OK, Network, RaftLog,
                            event_link, event_name, event_node)
 from time_sync import TimeSync, delay_for, local_cycles as local_cycles_now
 
@@ -340,6 +340,14 @@ class RaftAgent:
         self.next_request = 0
         self.self_events = []
         self.refill_self_reports()
+        # Cockpit liveness, which only the leader records.
+        self.cockpit_known = False
+        self.cockpit_alive = False
+        # Entries already shown. Everything the log held when this node started
+        # following is marked replayed; what arrives afterwards is live.
+        self.displayed = 0
+        self.replay_until = 0
+        self.following_since = False
 
     def draw_timeout(self):
         """Draw an election timeout in seconds.
@@ -502,6 +510,11 @@ class RaftAgent:
                 # leader's log wins. Report itself again through that leader.
                 self.refill_self_reports()
                 self.pending_event = None
+                self.cockpit_known = False
+                # Its own entries are gone with its leadership, so the display
+                # cursor restarts and the new leader's log is the replay.
+                self.displayed = 0
+                self.following_since = False
         elif header["term"] == self.term and self.role == CANDIDATE:
             # Someone else won this term. Stop standing.
             self.role = FOLLOWER
@@ -509,6 +522,12 @@ class RaftAgent:
         if header["term"] >= self.term:
             # Contact from a leader at or above our term holds the election off.
             self.last_contact = time.monotonic()
+            if not self.following_since:
+                # First contact from a leader. Everything it has already
+                # committed happened while this node was away or leading, so
+                # it is replay; what comes after is live.
+                self.following_since = True
+                self.replay_until = header["commit"]
         result, match = self.log.accept(self.term, header["term"],
                                         header["prev_index"], header["prev_term"],
                                         header["count"], header["entry_term"],
@@ -519,6 +538,7 @@ class RaftAgent:
             if target > self.commit_index:
                 self.commit_index = target
                 self.net.replay(self.log, self.commit_index)
+                self.show_new_entries()
         if stepped_down and self.config["Debug"]:
             print("raft: stepping down, term=%d leader is elsewhere" % self.term,
                   flush=True)
@@ -672,6 +692,48 @@ class RaftAgent:
             print("raft: append idx=%d term=%d %s"
                   % (index, self.term, event_name(event)), flush=True)
         return index
+
+    def report_cockpit(self, alive):
+        """Record whether the cockpit is heartbeating. Leader only.
+
+        On this node the answer is trivially yes whenever it leads, because
+        the cockpit is this node. The interesting case is the other direction:
+        the cockpit cannot report its own death, so COCKPIT_ERROR waits for
+        whoever wins the election. That is why checkoff step 6 allows a second
+        for the failure mode and only 100 ms for the motor to brake; braking is
+        local and does not wait for consensus.
+
+        :param alive: True when the cockpit is heartbeating.
+        """
+        if not self.is_leader():
+            return
+        if self.cockpit_known and self.cockpit_alive == alive:
+            return
+        self.cockpit_known = True
+        self.cockpit_alive = alive
+        self.client_append(COCKPIT_OK if alive else COCKPIT_ERROR)
+
+    def show_new_entries(self):
+        """Print entries committed since the last call, exactly once, in order.
+
+        Checkoff step 7 asks that events held while the cockpit was away appear
+        on its display exactly once, in order, marked replayed, and then live
+        events. The log already gives ordering and exactly-once for free: a
+        cursor over committed indices cannot skip or repeat. The only thing
+        needing a decision is where replayed stops and live begins, and the
+        natural line is the commit index the leader reported in the first
+        append this node accepted after it started following (TASKS.md D26).
+        """
+        while self.displayed < self.commit_index:
+            self.displayed += 1
+            entry = self.log.get(self.displayed)
+            if entry is None:
+                continue
+            mark = " replayed" if self.displayed <= self.replay_until else ""
+            if self.config["Debug"]:
+                print("raft: event idx=%d term=%d %s%s"
+                      % (self.displayed, entry[0], event_name(entry[1]), mark),
+                      flush=True)
 
     def refill_self_reports(self):
         """Queue this node's own existence and links for reporting.

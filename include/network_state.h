@@ -80,6 +80,11 @@ void network_replay(struct network *net, const struct raft_log *log, uint32_t th
  * @return True when the node is in the graph and alive.
  */
 bool network_node_up(const struct network *net, int node);
+/** @brief Report whether the committed log puts the vehicle in failure mode.
+ * @param net Network state.
+ * @return True when the cockpit is recorded as down.
+ */
+bool network_failure_mode(const struct network *net);
 /** @brief Report whether a node's link to a bus is up.
  * @param net Graph to read.
  * @param node Node ID 1..3.

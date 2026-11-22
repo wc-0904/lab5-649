@@ -1092,7 +1092,39 @@ checkoff step 7, and `COCKPIT_OK`/`COCKPIT_ERROR`.
 | 9.4 | Measure the step at handover on the scope | bench | No step larger than 100 microseconds |
 | 9.5 | `LEADER=random` boot mode, from **D13** | config | An STM32 leads from cold boot, no failure mode |
 
-### P10. Failure mode, cockpit down and back, checkoff steps 1, 6 and 7
+### P10. Failure mode, cockpit down and back, checkoff steps 1, 6 and 7  [WRITTEN, not yet on hardware]
+
+**D27 settled: failure mode is a log entry, braking is not.** Only the leader
+appends `COCKPIT_OK` and `COCKPIT_ERROR`, which is what keeps checkoff step 4's
+rule of exactly one entry per change: every node can see the cockpit go quiet,
+but only one of them is entitled to say so. `raft_report_cockpit()` compares
+against what it last recorded, so it is one entry per change rather than one
+per observation, and `become_leader()` clears that memory because a new leader
+cannot trust what a predecessor may never have committed.
+
+The cockpit cannot report its own death, so `COCKPIT_ERROR` waits for whoever
+wins the election. That is exactly why checkoff step 6 allows a second for the
+failure mode to appear but only 100 ms for the motor to brake: **braking is
+local and does not wait for consensus.** The monitor task already enters the
+error state from its own inputs within one 20 ms pass; failure mode is folded
+in on top, so the committed view can hold the vehicle in error even when a
+node's own inputs look fine, but can never be the thing that makes it slow.
+
+**D26 settled: a cursor over committed indices, and one line in the log.**
+Checkoff step 7 wants held events shown exactly once, in order, marked
+replayed, then live events. Ordering and exactly-once come free from the log: a
+cursor that only moves forward over committed indices cannot skip or repeat.
+The only real decision is where replay ends, and the natural line is **the
+commit index the leader reported in the first append this node accepted after
+it started following**. Everything at or below it happened while this node was
+away or leading; everything above is live.
+
+Losing the leadership resets that cursor, because entries this node appended
+while it led are not safe: a new leader's log wins and anything written under
+an older term is overwritten. The log it rejoins is effectively a new one.
+
+Nine tests cover both halves, including one entry per change rather than per
+observation, a follower recording nothing, and the replayed-then-live boundary.
 
 | # | Task | Where | Done when |
 |---|---|---|---|

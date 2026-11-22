@@ -132,6 +132,9 @@ static struct {
 	uint16_t client_request[LAB5_CFG_N + 1];
 	uint16_t client_index[LAB5_CFG_N + 1];
 	bool client_answered[LAB5_CFG_N + 1];
+	/* Cockpit liveness, which only the leader records. */
+	bool cockpit_known;
+	bool cockpit_alive;
 } state;
 static struct k_spinlock state_lock;
 
@@ -442,6 +445,12 @@ static void become_leader(void)
 		 */
 		state.client_answered[node] = false;
 	}
+	/*
+	 * A new leader asserts the cockpit's state itself rather than trusting
+	 * what the previous one recorded, which it may never have had time to
+	 * commit.
+	 */
+	state.cockpit_known = false;
 }
 
 /** @brief Commit the highest index a majority has stored, in the leader's term.
@@ -479,6 +488,56 @@ static bool advance_commit(void)
 	}
 	network_replay(&state.net, &state.log, state.commit_index);
 	return true;
+}
+
+/** @brief Record whether the cockpit is still heartbeating. Leader only.
+ *
+ * Part 3 gives COCKPIT_OK and COCKPIT_ERROR to the leader: it appends one when
+ * the cockpit's heartbeats resume or stop, and the state machine turns that
+ * into the vehicle's failure mode. Only the leader may do it, which is what
+ * keeps checkoff step 4's rule of exactly one entry per change: every node can
+ * see the cockpit go quiet, but only one of them is entitled to say so.
+ *
+ * The cockpit cannot report its own death, so when it leads the answer is
+ * trivially yes, and when it dies the entry waits for whoever wins the
+ * election. That is why checkoff step 6 allows a second for the failure mode to
+ * appear but only 100 ms for the motor to brake: braking is local and does not
+ * wait for consensus.
+ * @param alive True when cockpit heartbeats are fresh.
+ */
+void raft_report_cockpit(bool alive)
+{
+	uint8_t event = RAFT_EVENT_NONE;
+	uint32_t index = 0;
+
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+
+	if (state.role == RAFT_LEADER &&
+	    (!state.cockpit_known || state.cockpit_alive != alive)) {
+		state.cockpit_known = true;
+		state.cockpit_alive = alive;
+		event = alive ? RAFT_COCKPIT_OK : RAFT_COCKPIT_ERROR;
+		index = raft_log_append(&state.log, (uint8_t)state.term, event);
+		state.match_index[LAB_NODE_ID] = raft_log_last_index(&state.log);
+	}
+	k_spin_unlock(&state_lock, key);
+
+	if (event != RAFT_EVENT_NONE && LAB5_CFG_DEBUG) {
+		printk("raft: append idx=%u term=%u %s\n", index, raft_term(),
+		       raft_event_name(event));
+	}
+}
+
+/** @brief Report whether the committed log puts the vehicle in failure mode.
+ * @return True when the cockpit is recorded as down.
+ */
+bool raft_failure_mode(void)
+{
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+	bool failed = network_failure_mode(&state.net);
+
+	k_spin_unlock(&state_lock, key);
+	return failed;
 }
 
 /** @brief Send one AppendEntries when leading.

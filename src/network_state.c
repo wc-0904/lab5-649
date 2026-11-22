@@ -291,3 +291,12 @@ bool network_equal(const struct network *a, const struct network *b)
 	return a->nodes == b->nodes && a->links == b->links &&
 		a->failure_mode == b->failure_mode;
 }
+
+/** @brief Report whether the committed log puts the vehicle in failure mode.
+ * @param net Network state.
+ * @return True when the cockpit is recorded as down.
+ */
+bool network_failure_mode(const struct network *net)
+{
+	return net->failure_mode;
+}

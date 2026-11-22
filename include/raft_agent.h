@@ -140,6 +140,18 @@ void raft_on_ack(const uint8_t data[8], int from);
  * @param from Node that asked, taken from the identifier.
  */
 void raft_on_client_request(const uint8_t data[8], int from);
+/** @brief Record whether the cockpit is still heartbeating. Leader only.
+ *
+ * Only the leader may append COCKPIT_OK or COCKPIT_ERROR, which is what keeps
+ * checkoff step 4's rule of exactly one entry per change: every node can see
+ * the cockpit go quiet, but only one of them is entitled to say so.
+ * @param alive True when cockpit heartbeats are fresh.
+ */
+void raft_report_cockpit(bool alive);
+/** @brief Report whether the committed log puts the vehicle in failure mode.
+ * @return True when the cockpit is recorded as down.
+ */
+bool raft_failure_mode(void);
 /** @brief Count REF frames missed, detected as cycle counter gaps.
  * @return Missed reference count since boot.
  */
