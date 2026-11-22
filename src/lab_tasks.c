@@ -497,7 +497,14 @@ static void blink_task(void *a, void *b, void *c)
 			lab_io_set(LAB_LEFT, left && phase);
 			lab_io_set(LAB_RIGHT, right && phase);
 		}
-		lab_io_set(LAB_HZ, phase);
+		/*
+		 * HZ means the hazard phase, not the blink phase. Driving it
+		 * whenever the lamps toggle would leave it flashing on a
+		 * healthy vehicle, which reads as a fault that is not there.
+		 * Checkoff step 1 scopes it beside FL and RL during hazards,
+		 * and it stays dark otherwise.
+		 */
+		lab_io_set(LAB_HZ, s.error && phase);
 		finish(BLINK, start);
 
 		uint32_t wait_us = blink_until_edge_us(clock_us, half_us);
