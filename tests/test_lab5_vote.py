@@ -24,7 +24,8 @@ from network_state import event_link, event_node  # noqa: E402
 from protocol import (CLIENT_REQ_BASE, REQ_VOTE_BASE, VOTE_BASE,  # noqa: E402
                       lab5_id_for)
 from raft_agent import (CANDIDATE, FOLLOWER, LEADER, RaftAgent,  # noqa: E402
-                        REPLY_COMMITTED, REPLY_REDIRECT, append_decode,
+                        REPLY_COMMITTED, REPLY_REDIRECT, ack_encode,
+                        append_decode,
                         append_encode, reply_encode,
                         vote_decode, vote_encode, vote_request_decode,
                         vote_request_encode)
@@ -520,6 +521,68 @@ class SelfReportTests(unittest.TestCase):
         h.agent.on_append(append_encode(9, 0, 0, 0))
         self.assertEqual(len(h.agent.self_events), 3)
         self.assertIsNone(h.agent.pending_event)
+
+
+class ZombieLeaderTests(unittest.TestCase):
+    """A stale leader must learn it has been replaced from an acknowledgement.
+
+    REF carries no term, and a vote only reaches a node that took part in the
+    election, so a leader that missed an election has exactly one channel left:
+    the term field in the acknowledgements its own appends provoke. On the
+    bench, ignoring it left the cockpit transmitting appends that both Nucleos
+    rejected with STALE_TERM once a second, indefinitely.
+    """
+
+    def setUp(self):
+        """Load the real cluster configuration."""
+        self.config = load(ROOT / "config" / "cluster.conf")
+
+    def agent(self, node_id=1):
+        """Build a captured agent.
+
+        :param node_id: Numeric ID.
+        :return: Harness.
+        """
+        return Harness(node_id, self.config)
+
+    def test_a_refused_ack_makes_a_stale_leader_step_down(self):
+        """The exact bench failure."""
+        h = self.agent()
+        self.assertEqual(h.agent.role, LEADER)
+        # result 1 is STALE_TERM; the follower reports its own, higher term.
+        h.agent.on_ack(2, ack_encode(9, 0, 1))
+        self.assertEqual(h.agent.role, FOLLOWER)
+        self.assertEqual(h.agent.term, 9)
+
+    def test_a_stepped_down_leader_stops_transmitting(self):
+        """Otherwise two nodes keep putting appends on the bus."""
+        h = self.agent()
+        h.agent.on_ack(2, ack_encode(9, 0, 1))
+        h.sent.clear()
+        h.agent.append_tx(h.agent.last_contact + 1.0)
+        h.agent.ref_tx(h.agent.last_contact + 1.0)
+        self.assertEqual(h.sent, [])
+
+    def test_it_re_asserts_itself_after_stepping_down(self):
+        """Its own entries went with its leadership, so it reports again."""
+        h = self.agent()
+        h.agent.self_events = []
+        h.agent.on_ack(2, ack_encode(9, 0, 1))
+        self.assertEqual(len(h.agent.self_events), 3)
+
+    def test_an_ack_in_the_same_term_is_still_counted(self):
+        """The term check must not swallow ordinary acknowledgements."""
+        h = self.agent()
+        h.agent.log.append(h.agent.term, event_node(2, True))
+        h.agent.on_ack(2, ack_encode(h.agent.term, 1, 0))
+        self.assertEqual(h.agent.role, LEADER)
+        self.assertEqual(h.agent.match_index[2], 1)
+
+    def test_a_follower_ignores_an_ack_for_its_own_term(self):
+        """Only a leader counts acknowledgements."""
+        h = self.agent(2)
+        h.agent.on_ack(3, ack_encode(h.agent.term, 4, 0))
+        self.assertEqual(h.agent.match_index[3], 0)
 
 
 class ReplicationProgressTests(unittest.TestCase):

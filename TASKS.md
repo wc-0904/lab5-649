@@ -1292,6 +1292,28 @@ expensive and permanent, so a detection threshold feeding one has to sit well
 above the noise floor, not at it.** The same reasoning produced the asymmetric
 debounce in P5.
 
+**The threshold fix worked, and uncovered a zombie leader.** With the flapping
+gone, both Nucleos printed `append rejected result=1 prev=0 match=0` once a
+second indefinitely. `result=1` is STALE_TERM: the Nucleos held a higher term
+and the cockpit was still leading and still sending appends it had no right to
+send.
+
+The Pi's `on_ack()` read `result` and `match_index` but **never `term`**. The
+firmware's `raft_on_ack()` adopts a higher term and steps down; the Pi's did
+not. So every follower was telling it the term was stale in the one field it
+did not look at.
+
+That channel is the only one left for a leader that missed an election. REF
+carries no term, and a vote only reaches a node that took part in the election,
+so a stale leader's own appends provoking refusals is its sole remaining notice.
+Five tests cover it, including that an ack in the same term is still counted
+normally.
+
+This is the reverse of the pattern that produced most of tonight's bugs: usually
+the Pi had a rule the firmware lacked. Both directions have now bitten, which is
+the real argument for the two implementations being tested against each other
+rather than written twice.
+
 Still to do: 11.3, the bench work, where the open question is whether a node
 reachable only by relay still holds FL and RL within 1 ms. The relay adds a
 queue hop and a transmit worker to the reference path, which shifts that node's

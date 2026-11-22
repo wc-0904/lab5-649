@@ -874,9 +874,27 @@ class RaftAgent:
         :param data: Eight received bytes.
         :return: True when the commit index advanced.
         """
+        ack = ack_decode(data)
+        if ack["term"] > self.term:
+            # A follower refusing on term is the only notice a stale leader
+            # gets that it has been replaced. REF carries no term and a vote
+            # only reaches a node that took part in the election, so ignoring
+            # this field leaves a zombie leader transmitting appends that every
+            # follower rejects, for ever.
+            was_leader = self.is_leader()
+            self.adopt_term(ack["term"])
+            if was_leader:
+                self.refill_self_reports()
+                self.pending_event = None
+                self.cockpit_known = False
+                self.displayed = 0
+                self.following_since = False
+                if self.config["Debug"]:
+                    print("raft: stepping down, term=%d refused by %s"
+                          % (self.term, self.config["nodes"][node - 1]), flush=True)
+            return False
         if not self.is_leader() or node not in self.next_index:
             return False
-        ack = ack_decode(data)
         self.acks += 1
         if ack["result"] == 0:
             self.match_index[node] = max(self.match_index[node], ack["match_index"])
