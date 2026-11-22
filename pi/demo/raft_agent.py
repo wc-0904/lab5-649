@@ -823,11 +823,13 @@ class RaftAgent:
         and the graph stayed wrong, while checkoff step 4 lets the TA pick any
         node, including this one.
 
-        The signal is receive silence. A Nucleo reads its controller's error
-        counters directly; the Pi has no cheap way to do that without forking
-        `ip`, which would block the event loop and cost REF deadlines. But on a
+        The signal is receive silence, the same one the Nucleos use: on a
         healthy bus something arrives every 20 ms, two heartbeats and a
-        reference, so silence is as decisive here and costs nothing.
+        reference. The Nucleos first read their controller's error counters
+        instead, but their TX worker resets the controller after every
+        unacknowledged frame, which clears the counters, so a disconnected link
+        read healthy most of the time. Must match LAB_LINK_SILENCE_MS in
+        src/lab_can.c.
 
         The debounce is asymmetric for the same reason it is in the firmware: a
         log entry is permanent, so coming up late is free while a false entry

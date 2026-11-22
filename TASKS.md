@@ -1407,6 +1407,18 @@ committed state without a lag relative to its own log.
 Kept from that work: serialising self-reports on the commit index, and the
 cockpit's own link detection, both of which stand on their own.
 
+**Link detection on the Nucleos was sampling a counter the TX worker keeps
+wiping.** With N3 off bus A, N3 kept reporting `CANLINK_drivetrain_1` back UP
+every few seconds, and the prints showed `tec=0` straight after `tec=128` on a
+bus with no node left to acknowledge anything. Bus resistance measured a correct
+60 ohms, ruling out termination. Cause: `tx_worker()` calls `restart()` after
+every frame unacknowledged within `TX_AGE_MS` (5 ms), and `restart()` takes the
+MCP2515 through configuration mode, which clears TEC and REC. On a dead branch
+the counter saws 0 to 128 to 0 every heartbeat and reads healthy for most of
+each 20 ms cycle, so the result depended on the beat between the heartbeat and
+the link poll. Fixed by using receive silence (no frame for 100 ms), the signal
+the Pi already used, in `lab_can_link_healthy()`. Not yet on hardware.
+
 **11.3 measured, and it failed, and here is why and the fix.** With the Pi off
 bus B and N3 off bus A (the exact two-link-pulled topology step 5 builds), the
 scoped FL/RL skew between N2 (direct reception) and N3 (reachable only by

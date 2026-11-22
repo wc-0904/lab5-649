@@ -51,12 +51,12 @@ void lab_can_send_lab5(uint16_t id, const uint8_t data[8]);
  * which drives the controller error passive and then bus off. That is the
  * signal the owner-reports-own-links rule needs (TASKS.md D15).
  *
- * Healthy means error active **with a zero transmit error count**. The counter
- * matters: after bus off the controller recovers automatically and returns to
- * error active for a few hundred milliseconds before failing again, so a state
- * check alone reads a disconnected branch as repeatedly coming back.
+ * Healthy means **a frame was heard on that bus within the last 100 ms**. The
+ * controller's error counters are not used: the TX worker resets the
+ * controller after every unacknowledged frame, which clears them, so on a
+ * disconnected branch they read healthy most of the time. See lab_can.c.
  * @param bus Physical index 0 for A, 1 for B.
- * @return True when the controller is error active and has no transmit errors.
+ * @return True when a frame was received on that bus within the last 100 ms.
  */
 bool lab_can_link_healthy(int bus);
 /** @brief Read the controller's state and error counters, for diagnosis.

@@ -20,6 +20,10 @@
 
 K_MSGQ_DEFINE(rx_queue, sizeof(struct lab_rx), 64, 4);
 static atomic_t drops;
+/** @brief Uptime in ms, truncated to 32 bits, of the last frame heard per bus. */
+static atomic_t last_rx_ms[2];
+/** @brief Whether any frame has been heard on each bus since boot. */
+static atomic_t heard[2];
 static uint8_t sequence[7];
 struct tx_item {
 	struct can_frame frame;
@@ -58,6 +62,11 @@ static void receive_cb(const struct device *dev, struct can_frame *frame, void *
 	ARG_UNUSED(dev);
 	struct lab_rx rx = {.frame = *frame, .time_ms = k_uptime_get(),
 		.cycles = cycles, .bus = (uint8_t)(uintptr_t)user};
+
+	if (rx.bus < 2) {
+		atomic_set(&last_rx_ms[rx.bus], (atomic_val_t)k_uptime_get_32());
+		atomic_set(&heard[rx.bus], 1);
+	}
 
 	if (k_msgq_put(&rx_queue, &rx, K_NO_WAIT) != 0) {
 		atomic_inc(&drops);
@@ -311,13 +320,13 @@ void lab_can_send(uint16_t id, uint8_t data[8])
 	(void)enqueue(&frame, 1, origin, false);
 }
 
-/** @brief Transmit error counter below which a link still counts as healthy.
+/** @brief Receive silence on a bus, in ms, after which this node calls its link down.
  *
- * Three quarters of the way to the error-passive boundary at 128, so a
- * transient is tolerated while a disconnected branch, whose counter runs past
- * 128 within a few frames, is not.
+ * Five missed 20 ms heartbeats. Every live node sends HB on both buses every
+ * 20 ms and the leader adds REF, so a connected link never goes this long
+ * without a frame. Must match LINK_SILENCE in pi/demo/raft_agent.py.
  */
-#define LAB_LINK_TEC_LIMIT 96
+#define LAB_LINK_SILENCE_MS 100U
 
 /** @brief Report whether this node's own link to one bus is transmitting cleanly.
  * @param bus Physical index 0 for A, 1 for B.
@@ -351,33 +360,27 @@ void lab_can_link_state(int bus, int *state, int *tx_errors, int *rx_errors)
 bool lab_can_link_healthy(int bus)
 {
 	/*
-	 * A transmit error counter below this still counts as a healthy link.
+	 * Receive silence, not the transmit error counter. The counter cannot be
+	 * trusted here because tx_worker() calls restart() whenever a frame goes
+	 * unacknowledged for TX_AGE_MS, and restart() takes the MCP2515 through
+	 * configuration mode, which clears TEC and REC. On a bus with nobody else
+	 * on it the counter therefore saws between 128 and 0 every heartbeat, and
+	 * reads healthy for most of each 20 ms cycle. Whether the 20 ms link poll
+	 * sampled the healthy or the unhealthy part depended on the beat between
+	 * two periodic tasks, so a disconnected link was reported UP and DOWN at
+	 * random every few seconds. On the bench this showed as a link printed UP
+	 * with tec=0 straight after a DOWN with tec=128, on a bus that had no node
+	 * left to acknowledge anything, which only a controller reset can produce.
 	 *
-	 * Requiring zero, as this first did, reports a link down after any
-	 * single transient on the bus: the counter jumps by eight on one
-	 * transmission error and falls by only one per successful frame, so a
-	 * stray bit keeps it non-zero for eight more frames. On the bench that
-	 * wrote a DOWN and an UP into the consensus log every twenty to sixty
-	 * seconds with nothing physically touched. **A log entry is expensive
-	 * and permanent, so the threshold has to sit well above the noise.**
-	 *
-	 * 96 is three quarters of the way to the error-passive boundary at 128.
-	 * A genuinely disconnected branch gets no acknowledgement at all, so its
-	 * counter climbs past 128 within a few frames and the state check below
-	 * catches it regardless; this threshold only decides how much transient
-	 * noise is tolerated on a link that is really there.
+	 * Hearing a frame is decisive in both directions and is what the Pi has
+	 * always used: every live node heartbeats on both buses every 20 ms.
 	 */
-	enum can_state state;
-	struct can_bus_err_cnt errors;
+	if (bus < 0 || bus > 1 || !buses[bus].started || !atomic_get(&heard[bus])) {
+		return false;
+	}
+	uint32_t age = k_uptime_get_32() - (uint32_t)atomic_get(&last_rx_ms[bus]);
 
-	if (bus < 0 || bus > 1 || !buses[bus].started) {
-		return false;
-	}
-	if (can_get_state(buses[bus].dev, &state, &errors) != 0) {
-		return false;
-	}
-	return state == CAN_STATE_ERROR_ACTIVE &&
-		errors.tx_err_cnt < LAB_LINK_TEC_LIMIT;
+	return age < LAB_LINK_SILENCE_MS;
 }
 
 /** @brief Send a Lab 5 frame onto both buses with the payload untouched.
