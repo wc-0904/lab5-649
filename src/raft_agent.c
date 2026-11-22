@@ -28,14 +28,15 @@
 #define GAP_REPORT_MS 1000
 /** @brief Cycle counter step above which a jump means the master restarted.
  *
- * The counter is 16 bits and advances by one every heartbeat, so a forward step
- * of more than half its range is really a backward jump: the time master
- * restarted and began counting from zero again. Treating that as lost
+ * The counter advances by one every heartbeat, so a forward step of more than
+ * half its range is really a backward jump: the time master restarted and began
+ * counting from zero again. Derived from the field width rather than written
+ * out, because the field has already been narrowed once. Treating that as lost
  * references would report tens of thousands of them, which is what happened
  * before this check existed. The checkoff restarts the leader repeatedly, so
  * this is a normal event, not an error.
  */
-#define CYCLE_RESTART_STEP 32768U
+#define CYCLE_RESTART_STEP ((LAB5_REF_CYCLE_MAX + 1U) / 2U)
 /** @brief Milliseconds without a REF after which this node is no longer synced.
  *
  * The same bound Part 2 gives the follower for declaring the leader dead, so
@@ -304,9 +305,27 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us, uint32_t local_cycles
 
 	k_spinlock_key_t key = k_spin_lock(&state_lock);
 
-	/* A gap of more than one in the counter means references were lost. */
-	if (state.have_cycle) {
-		uint16_t step = (uint16_t)(ref.cycle - state.cycle);
+	/*
+	 * A different master makes the counter meaningless: it is that node's
+	 * own, starting wherever it starts. Checking the identity is exact,
+	 * where guessing from a backward jump is not. Narrowing the counter to
+	 * fourteen bits shrank the range over which such a guess even works, so
+	 * the identity now carries that job and the step heuristic only has to
+	 * catch the same master restarting.
+	 */
+	if (state.have_cycle && ref.master != state.last.master) {
+		restarted = true;
+	} else if (state.have_cycle) {
+		/*
+		 * Masked to the field's real width. The counter gave up two of
+		 * its sixteen bits to carry the master's node ID, and this
+		 * subtraction was left at sixteen: a legitimate wrap from
+		 * 16383 to 0 then computes as 49153 rather than 1, which reads
+		 * as a backward jump and reported a master restart every 16384
+		 * heartbeats, five and a half minutes, for nothing.
+		 */
+		uint16_t step = (uint16_t)((ref.cycle - state.cycle) &
+					   LAB5_REF_CYCLE_MAX);
 
 		if (step == 0) {
 			/*
@@ -385,8 +404,9 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us, uint32_t local_cycles
 		       lab_node_name(raft_leader()), ref.cycle,
 		       (unsigned long long)ref.master_us);
 	} else if (restarted) {
-		printk("raft: time master restarted, cycle=%u master=%llu us\n",
-		       ref.cycle, (unsigned long long)ref.master_us);
+		printk("raft: time master is %s, cycle=%u master=%llu us\n",
+		       lab_node_name(ref.master), ref.cycle,
+		       (unsigned long long)ref.master_us);
 	} else if (report_gap) {
 		printk("raft: missed %u REF at cycle=%u, %u total\n", gap, ref.cycle, missed);
 	}
