@@ -805,6 +805,15 @@ class RaftAgent:
         :param now: Monotonic time from the caller's loop.
         :return: Encoded event to report, or None.
         """
+        # Self healing, as the firmware does it: entries this node wrote can
+        # vanish without any term change, because a plain consistency mismatch
+        # truncates the tail. Comparing against the committed graph converges
+        # whatever the cause, instead of catching each path separately.
+        if not self.net.node_up(self.node_id) and not self.self_events:
+            self.refill_self_reports()
+        for bus in (0, 1):
+            if not self.link_down[bus] and not self.net.link_up(self.node_id, bus + 1):
+                self.link_down[bus] = True
         for bus in (0, 1):
             down = now - last_rx[bus] >= LINK_SILENCE
             needed = LINK_DOWN_DEBOUNCE if down else LINK_UP_DEBOUNCE

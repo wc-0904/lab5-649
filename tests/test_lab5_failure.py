@@ -243,12 +243,21 @@ class CockpitLinkDetectionTests(unittest.TestCase):
         self.config = load(ROOT / "config" / "cluster.conf")
 
     def agent(self):
-        """Build a captured cockpit agent with its startup reports drained.
+        """Build a cockpit agent already present in its own committed graph.
+
+        Without that the self-healing check correctly concludes the node is
+        missing and re-reports, which is the behaviour these tests are not
+        about. A node in steady state is in its own graph.
 
         :return: Harness.
         """
         h = Harness(1, self.config)
         h.agent.self_events = []
+        for event in (event_node(1, True), event_link(1, 1, True),
+                      event_link(1, 2, True)):
+            h.agent.log.append(h.agent.term, event)
+        h.agent.commit_index = h.agent.log.last_index()
+        h.agent.net.replay(h.agent.log, h.agent.commit_index)
         return h
 
     @staticmethod
@@ -310,6 +319,54 @@ class CockpitLinkDetectionTests(unittest.TestCase):
         h.agent.pending_event = None
         self.assertEqual(h.agent.poll_links(self.seen(10.7, 1, 10.0), 10.7),
                          event_link(1, 2, False))
+
+
+class SelfHealingTests(unittest.TestCase):
+    """A node absent from the committed graph re-reports itself.
+
+    Entries a node wrote can vanish without any term change, because a plain
+    consistency mismatch truncates the tail. Catching each path that
+    invalidates them one at a time does not converge; comparing against the
+    committed graph does, whatever the cause. On the bench a node truncated to
+    a single entry led the cluster while absent from its own graph.
+    """
+
+    def setUp(self):
+        """Load the real cluster configuration."""
+        self.config = load(ROOT / "config" / "cluster.conf")
+
+    def test_a_node_missing_from_the_graph_requeues_itself(self):
+        """The repair, whatever truncated the log."""
+        h = Harness(1, self.config)
+        h.agent.self_events = []
+        self.assertFalse(h.agent.net.node_up(1))
+        h.agent.poll_links([10.0, 10.0], 10.0)
+        self.assertEqual(len(h.agent.self_events), 3)
+
+    def test_a_node_present_in_the_graph_is_left_alone(self):
+        """Re-reporting every pass would fill the log with duplicates."""
+        h = Harness(1, self.config)
+        h.agent.self_events = []
+        for event in (event_node(1, True), event_link(1, 1, True),
+                      event_link(1, 2, True)):
+            h.agent.log.append(h.agent.term, event)
+        h.agent.commit_index = h.agent.log.last_index()
+        h.agent.net.replay(h.agent.log, h.agent.commit_index)
+        h.agent.poll_links([10.0, 10.0], 10.0)
+        self.assertEqual(h.agent.self_events, [])
+
+    def test_a_link_missing_from_the_graph_is_reported_again(self):
+        """The node is present but one of its links was truncated away."""
+        h = Harness(1, self.config)
+        h.agent.self_events = []
+        h.agent.log.append(h.agent.term, event_node(1, True))
+        h.agent.log.append(h.agent.term, event_link(1, 1, True))
+        h.agent.commit_index = h.agent.log.last_index()
+        h.agent.net.replay(h.agent.log, h.agent.commit_index)
+        # Bus B is missing from the graph, so it is marked for re-reporting.
+        h.agent.poll_links([10.0, 10.0], 10.0)
+        self.assertTrue(h.agent.link_down[1])
+        self.assertFalse(h.agent.link_down[0])
 
 
 if __name__ == "__main__":
