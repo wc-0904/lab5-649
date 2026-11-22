@@ -1092,7 +1092,7 @@ checkoff step 7, and `COCKPIT_OK`/`COCKPIT_ERROR`.
 | 9.4 | Measure the step at handover on the scope | bench | No step larger than 100 microseconds |
 | 9.5 | `LEADER=random` boot mode, from **D13** | config | An STM32 leads from cold boot, no failure mode |
 
-### P10. Failure mode, cockpit down and back, checkoff steps 1, 6 and 7  [WRITTEN, not yet on hardware]
+### P10. Failure mode, cockpit down and back, checkoff steps 1, 6 and 7  [DONE, verified on hardware 2026-11-22]
 
 **D27 settled: failure mode is a log entry, braking is not.** Only the leader
 appends `COCKPIT_OK` and `COCKPIT_ERROR`, which is what keeps checkoff step 4's
@@ -1161,6 +1161,21 @@ in catch-up rate and wastes a dead node's turns, which is the right trade: the
 alive followers keep moving, and a follower accepts an entry it already holds
 idempotently, so a turn spent elsewhere does it no harm. Three tests cover it,
 including the exact bench case of a silent node and a seven entry log.
+
+**Verified on hardware.** With the cockpit down the commit index walks all the
+way out and the graph is correct for a cluster running without it:
+
+```
+commit idx=4 net nodes=.S.  links=..12.. mode=FAIL
+commit idx=5 net nodes=.SD  links=..12.. mode=FAIL
+commit idx=6 net nodes=.SD  links=..121. mode=FAIL
+commit idx=7 net nodes=.SD  links=..1212 mode=FAIL
+```
+
+No cockpit, both Nucleos up on both buses, failure mode from the committed
+`COCKPIT_ERROR`. With the cockpit restarted it steps down, replays its held
+events marked `replayed`, `COCKPIT_OK` lands and every node returns to
+`nodes=CSD links=121212 mode=OK`.
 
 | # | Task | Where | Done when |
 |---|---|---|---|
