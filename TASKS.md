@@ -915,6 +915,34 @@ append at or below its own term, because both buses carry it and a relay can
 return it, and applying it would mean running the consistency check against its
 own log and truncating entries it is still replicating.
 
+**The step-down did not work on the first try, and the reason was larger than
+the symptom.** The Pi still led after a restart. The cause was not on the Pi at
+all: **an STM32 leader had no replication path whatsoever.** It could win an
+election and send REF, but there was no AppendEntries transmitter, no ack
+handling and no client request handling, because none of that was ever needed
+while the cockpit was permanently leader. So an STM32 leader was a time master
+only, and since REF carries no term and a vote only reaches a node that took
+part in the election, nothing on the bus carried a term the restarted Pi had to
+respect.
+
+Added to `src/raft_agent.c`:
+
+- `raft_append_tx()`, idle at 100 ms and at the heartbeat rate while a follower
+  is behind, built from the furthest behind follower's nextIndex since one
+  identifier is broadcast to all of them. This is what lets a stale leader
+  discover it has been replaced.
+- `raft_on_ack()`, advancing matchIndex and nextIndex, walking nextIndex back on
+  a refusal, and committing by majority.
+- `advance_commit()`, which only commits an entry from the leader's own term,
+  the rule that keeps a later leader from committing a predecessor's entry on a
+  count that was never a majority at the time.
+- `raft_on_client_request()`, so link changes reported while an STM32 leads are
+  recorded rather than retried for ever, with a redirect when a client reaches a
+  follower.
+- `become_leader()`, resetting every nextIndex to the leader's own end of the
+  log and every matchIndex to zero, because a new leader knows nothing about
+  what its followers hold.
+
 Still to do in P10: the held events and replay-exactly-once behaviour of
 checkoff step 7, and `COCKPIT_OK`/`COCKPIT_ERROR`.
 

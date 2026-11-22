@@ -248,6 +248,14 @@ static void dispatch_task(void *a, void *b, void *c)
 					raft_on_vote(rx.frame.data, node);
 					break;
 				}
+				if (id == lab5_id_for(LAB5_APPEND_ACK_BASE, node)) {
+					raft_on_ack(rx.frame.data, node);
+					break;
+				}
+				if (id == lab5_id_for(LAB5_CLIENT_REQ_BASE, node)) {
+					raft_on_client_request(rx.frame.data, node);
+					break;
+				}
 			}
 			finish(DISPATCH, start);
 			continue;
@@ -713,6 +721,7 @@ static void monitor_task(void *a, void *b, void *c)
 		/* SYNC tracks liveness, so it has to age out here, not only on RX. */
 		raft_agent_tick(now);
 		raft_election_tick(now);
+		raft_append_tx(now);
 		raft_client_poll(now);
 		k_spinlock_key_t key = k_spin_lock(&state_lock);
 		bool error = state.local_fail || !state.have_ctrl || now - state.ctrl_at >= 60;

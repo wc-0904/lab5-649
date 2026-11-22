@@ -122,6 +122,24 @@ void raft_on_vote(const uint8_t data[8], int from);
  * @return True when a frame was sent.
  */
 bool raft_ref_tx(void);
+/** @brief Send one AppendEntries when leading.
+ *
+ * Also the only frame that makes a node which still believes it leads adopt a
+ * newer term and stand down: REF carries no term, and a vote only reaches a
+ * node that took part in the election.
+ * @param now_ms Current uptime in milliseconds.
+ */
+void raft_append_tx(int64_t now_ms);
+/** @brief Apply a follower's acknowledgement. Leader only.
+ * @param data Eight received bytes.
+ * @param from Node that acknowledged, taken from the identifier.
+ */
+void raft_on_ack(const uint8_t data[8], int from);
+/** @brief Record a client's event when leading, and answer it.
+ * @param data Eight received bytes.
+ * @param from Node that asked, taken from the identifier.
+ */
+void raft_on_client_request(const uint8_t data[8], int from);
 /** @brief Count REF frames missed, detected as cycle counter gaps.
  * @return Missed reference count since boot.
  */

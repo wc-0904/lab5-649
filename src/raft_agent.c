@@ -50,6 +50,13 @@
  * is the moment it should start trying to become one.
  */
 #define ELECTION_BASE_MS SYNC_TIMEOUT_MS
+/** @brief Idle AppendEntries period, milliseconds.
+ *
+ * Checkoff step 2 expects an empty APPEND every 100 ms beside REF every 20.
+ * While a follower is behind the leader sends at the heartbeat rate instead,
+ * so catching up takes one heartbeat per entry rather than 100 ms per entry.
+ */
+#define APPEND_IDLE_MS 100
 /** @brief How long a link must look bad before it is reported down, milliseconds.
  *
  * A jumper pull is mechanically noisy and the controller crosses error passive
@@ -106,6 +113,13 @@ static struct {
 	uint8_t votes;
 	/* Last time anything was heard from a leader this node accepts. */
 	int64_t last_contact_ms;
+	/*
+	 * Leader-side replication. Indexed by node ID, so slot zero is unused
+	 * and the arithmetic reads the way Raft's paper writes it.
+	 */
+	uint32_t next_index[LAB5_CFG_N + 1];
+	uint32_t match_index[LAB5_CFG_N + 1];
+	int64_t last_append_ms;
 } state;
 static struct k_spinlock state_lock;
 
@@ -119,6 +133,10 @@ void raft_agent_init(void)
 	state.leader = LAB5_CFG_DEFAULT_LEADER;
 	state.term = state.leader != 0 ? BOOT_TERM : 0;
 	state.role = state.leader == LAB_NODE_ID ? RAFT_LEADER : RAFT_FOLLOWER;
+	for (int node = 1; node <= LAB5_CFG_N; node++) {
+		state.next_index[node] = 1;
+		state.match_index[node] = 0;
+	}
 	raft_log_init(&state.log);
 	network_reset(&state.net);
 	state.commit_index = 0;
@@ -387,6 +405,213 @@ static bool log_is_current(uint16_t last_index, uint8_t last_term)
 	return last_index >= mine_index;
 }
 
+/** @brief Take the leadership, resetting what is known about the followers.
+ *
+ * A new leader knows nothing about which entries its followers hold, so Raft
+ * starts every nextIndex at its own end of the log and walks back on refusal.
+ * Called with the lock held.
+ */
+static void become_leader(void)
+{
+	state.role = RAFT_LEADER;
+	state.leader = LAB_NODE_ID;
+	state.last_contact_ms = k_uptime_get();
+	state.last_append_ms = 0;
+	for (int node = 1; node <= LAB5_CFG_N; node++) {
+		state.next_index[node] = raft_log_last_index(&state.log) + 1;
+		state.match_index[node] = 0;
+	}
+}
+
+/** @brief Commit the highest index a majority has stored, in the leader's term.
+ *
+ * Raft only commits an entry from the leader's own term by counting replicas,
+ * which keeps a later leader from committing a predecessor's entry on a count
+ * that was never a majority at the time. Called with the lock held.
+ * @return True when the commit index advanced.
+ */
+static bool advance_commit(void)
+{
+	uint32_t before = state.commit_index;
+
+	for (uint32_t index = raft_log_last_index(&state.log);
+	     index > state.commit_index; index--) {
+		uint8_t term = 0;
+		int stored = 1;
+
+		if (!raft_log_term_at(&state.log, index, &term) ||
+		    term != (uint8_t)state.term) {
+			continue;
+		}
+		for (int node = 1; node <= LAB5_CFG_N; node++) {
+			if (node != LAB_NODE_ID && state.match_index[node] >= index) {
+				stored++;
+			}
+		}
+		if (stored >= LAB5_CFG_MAJORITY) {
+			state.commit_index = index;
+			break;
+		}
+	}
+	if (state.commit_index == before) {
+		return false;
+	}
+	network_replay(&state.net, &state.log, state.commit_index);
+	return true;
+}
+
+/** @brief Send one AppendEntries when leading.
+ *
+ * One identifier is broadcast to every follower, so the header is built from
+ * the **furthest behind** follower's nextIndex. A follower that already holds
+ * that entry accepts it idempotently, which is why raft_log_accept() was
+ * written that way: on this bus each append arrives two to four times anyway,
+ * once per bus plus relayed copies.
+ *
+ * This is also what lets a stale leader discover it has been replaced. REF
+ * carries no term, and a vote only reaches a node that took part in the
+ * election, so AppendEntries is the only frame that makes a node that still
+ * believes it leads adopt a newer term and stand down.
+ * @param now_ms Current uptime in milliseconds.
+ */
+void raft_append_tx(int64_t now_ms)
+{
+	struct lab5_append header = {0};
+	uint8_t data[8];
+	bool send = false;
+
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+
+	if (state.role == RAFT_LEADER) {
+		uint32_t last = raft_log_last_index(&state.log);
+		uint32_t nxt = last + 1;
+		bool behind;
+
+		for (int node = 1; node <= LAB5_CFG_N; node++) {
+			if (node != LAB_NODE_ID && state.next_index[node] < nxt) {
+				nxt = state.next_index[node];
+			}
+		}
+		if (nxt < 1) {
+			nxt = 1;
+		}
+		if (nxt > last + 1) {
+			nxt = last + 1;
+		}
+		behind = nxt <= last;
+		/* Idle at 100 ms, at the heartbeat rate while replicating. */
+		if (now_ms - state.last_append_ms >=
+		    (behind ? LAB5_CFG_HEARTBEAT_MS : APPEND_IDLE_MS)) {
+			struct raft_entry entry;
+
+			header.term = (uint8_t)state.term;
+			header.prev_index = (uint16_t)(nxt - 1);
+			(void)raft_log_term_at(&state.log, nxt - 1, &header.prev_term);
+			header.commit = (uint16_t)state.commit_index;
+			if (raft_log_get(&state.log, nxt, &entry)) {
+				header.count = 1;
+				header.event = entry.event;
+			}
+			state.last_append_ms = now_ms;
+			send = true;
+		}
+	}
+	k_spin_unlock(&state_lock, key);
+
+	if (!send) {
+		return;
+	}
+	lab5_append_encode(data, &header);
+	lab_can_send_lab5(LAB5_APPEND, data);
+}
+
+/** @brief Apply a follower's acknowledgement. Leader only.
+ * @param data Eight received bytes.
+ * @param from Node that acknowledged, taken from the identifier.
+ */
+void raft_on_ack(const uint8_t data[8], int from)
+{
+	struct lab5_ack ack = lab5_ack_decode(data);
+	char line[NETWORK_PRINT_SIZE];
+	bool advanced = false;
+	uint32_t committed = 0;
+
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+
+	if (ack.term > state.term) {
+		adopt_term(ack.term);
+		k_spin_unlock(&state_lock, key);
+		return;
+	}
+	if (state.role != RAFT_LEADER || from < 1 || from > LAB5_CFG_N ||
+	    from == LAB_NODE_ID) {
+		k_spin_unlock(&state_lock, key);
+		return;
+	}
+	if (ack.result == RAFT_APPEND_ACCEPTED) {
+		if (ack.match_index > state.match_index[from]) {
+			state.match_index[from] = ack.match_index;
+		}
+		state.next_index[from] = state.match_index[from] + 1;
+		advanced = advance_commit();
+		committed = state.commit_index;
+		if (advanced) {
+			network_print(&state.net, line, sizeof(line));
+		}
+	} else if (state.next_index[from] > 1) {
+		/* Walk back one entry and try again; the follower is behind. */
+		state.next_index[from]--;
+	}
+	k_spin_unlock(&state_lock, key);
+
+	if (advanced && LAB5_CFG_DEBUG) {
+		printk("raft: commit idx=%u %s\n", committed, line);
+	}
+}
+
+/** @brief Record a client's event when leading, and answer it.
+ *
+ * Steps 2 and 6 of the handout's write path. Without this an STM32 leader is a
+ * time master only: link changes reported while it leads would be answered by
+ * nobody and retried for ever.
+ * @param data Eight received bytes.
+ * @param from Node that asked, taken from the identifier.
+ */
+void raft_on_client_request(const uint8_t data[8], int from)
+{
+	struct lab5_client request = lab5_client_decode(data);
+	struct lab5_reply reply = {0};
+	uint8_t out[8];
+	bool answer = false;
+
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+
+	reply.request = request.request;
+	reply.node = (uint8_t)from;
+	if (state.role == RAFT_LEADER) {
+		uint32_t index = raft_log_append(&state.log, (uint8_t)state.term,
+						 request.event);
+
+		state.match_index[LAB_NODE_ID] = index;
+		reply.result = LAB5_REPLY_COMMITTED;
+		reply.leader = (uint8_t)LAB_NODE_ID;
+		reply.index = (uint16_t)index;
+		answer = true;
+	} else if (state.leader != 0) {
+		/* A client that reached a follower is redirected, not ignored. */
+		reply.result = LAB5_REPLY_REDIRECT;
+		reply.leader = (uint8_t)state.leader;
+		answer = true;
+	}
+	k_spin_unlock(&state_lock, key);
+
+	if (!answer) {
+		return;
+	}
+	lab5_reply_encode(out, &reply);
+	lab_can_send_lab5(LAB5_CLIENT_REDIRECT, out);
+}
+
 /** @brief Start an election if nothing has been heard from a leader.
  *
  * Called from the monitor task. The timeout is drawn fresh for every round
@@ -505,9 +730,7 @@ void raft_on_vote(const uint8_t data[8], int from)
 			count += (state.votes >> node) & 1U;
 		}
 		if (count >= LAB5_CFG_MAJORITY) {
-			state.role = RAFT_LEADER;
-			state.leader = LAB_NODE_ID;
-			state.last_contact_ms = k_uptime_get();
+			become_leader();
 			won = true;
 			term = state.term;
 		}
