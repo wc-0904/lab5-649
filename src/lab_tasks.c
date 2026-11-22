@@ -744,6 +744,15 @@ static void drift_task(void *a, void *b, void *c)
 				      1000000) >> TIME_SYNC_RATIO_SHIFT),
 			       (int)edge.correction_us);
 		}
+		if (LAB5_CFG_DEBUG && !time_sync_locked()) {
+			/*
+			 * Without this the module fails silently: an unlocked
+			 * timeline prints nothing at all, which is exactly what
+			 * a wrong tick rate looks like from the console.
+			 */
+			printk("sync: no lock yet, ref=%d missed=%u\n",
+			       raft_synced(), raft_missed_refs());
+		}
 		if (LAB5_CFG_DEBUG && time_sync_locked()) {
 			uint64_t global = time_sync_global_us(pps_now());
 			int32_t ratio = time_sync_ratio();

@@ -8,6 +8,7 @@
 #include "time_sync.h"
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/clock_control.h>
+#include <zephyr/sys/printk.h>
 #include <zephyr/drivers/clock_control/stm32_clock_control.h>
 #include <stm32f4xx_ll_gpio.h>
 #include <stm32f4xx_ll_tim.h>
@@ -206,15 +207,28 @@ int pps_init(void)
 	if (rc != 0) {
 		return rc;
 	}
-	rc = clock_control_get_rate(clock, (clock_control_subsys_t)&pclken[0], &rate);
+	/*
+	 * The node lists two clocks and they are not interchangeable. Index 0
+	 * is the APB1 gate, which reports the bus rate, 42 MHz here. Index 1 is
+	 * the timer input, which the reference manual doubles to 84 MHz because
+	 * the bus prescaler is not one. Reading index 0 by mistake halves every
+	 * derived timestamp, which rejects every drift sample on tolerance and
+	 * silently leaves the module unlocked: no global time and no edge.
+	 */
+	if (ARRAY_SIZE(pclken) < 2) {
+		return -EINVAL;
+	}
+	rc = clock_control_configure(clock, (clock_control_subsys_t)&pclken[1], NULL);
+	if (rc != 0) {
+		return rc;
+	}
+	rc = clock_control_get_rate(clock, (clock_control_subsys_t)&pclken[1], &rate);
 	if (rc != 0) {
 		return rc;
 	}
 	/*
-	 * APB1 runs at half the core clock here, and the reference manual
-	 * doubles the timer input when the bus prescaler is not one, which is
-	 * what clock_control reports. Derive the divider rather than assuming
-	 * 84 MHz, so a clock tree change cannot silently skew every timestamp.
+	 * Derive the divider rather than assuming 84 MHz, so a clock tree change
+	 * cannot silently skew every timestamp.
 	 */
 	if (rate < PPS_TICK_HZ || rate % PPS_TICK_HZ != 0) {
 		return -EINVAL;
@@ -241,5 +255,12 @@ int pps_init(void)
 	IRQ_CONNECT(DT_IRQN(PPS_TIMER), DT_IRQ(PPS_TIMER, priority), pps_isr, NULL, 0);
 	irq_enable(DT_IRQN(PPS_TIMER));
 	state.ready = true;
+	/*
+	 * One banner line, not periodic. The tick rate is the single assumption
+	 * every timestamp rests on, and getting it wrong fails silently: the
+	 * drift samples are simply rejected and nothing is ever printed. Make it
+	 * visible at boot instead.
+	 */
+	printk("pps: TIM5 clock %u Hz, tick %u Hz\n", rate, PPS_TICK_HZ);
 	return 0;
 }
