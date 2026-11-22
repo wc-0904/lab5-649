@@ -142,6 +142,21 @@ static void fail(enum lab_reason reason)
 	k_sem_give(&output_event);
 	k_sem_give(&blink_event);
 	k_sem_give(&test_event);
+	if (LAB5_CFG_DEBUG) {
+		static const char *const names[] = {"?", "TEST", "RANGE",
+			"QUEUE", "IO"};
+
+		/*
+		 * A latched local failure takes this node off the air: it stops
+		 * heartbeating on both buses and holds the error state for
+		 * good. Until now nothing said so, and the ERR pin is only
+		 * wired on N2, so on the other node it was invisible. Printed
+		 * once, because fail() returns early when already latched.
+		 */
+		printk("raft: LOCAL FAIL reason=%s drops=%u bad=%ld\n",
+		       names[reason <= LAB_IO ? reason : 0], lab_can_drops(),
+		       (long)atomic_get(&malformed));
+	}
 }
 
 /** @brief Debounce button edges without sleeping in the interrupt. */
