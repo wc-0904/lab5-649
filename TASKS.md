@@ -1205,7 +1205,7 @@ needed.
 | 10.2 | Error state within 100 ms, motor braked, from **D27** | `lab_tasks.c` | Cold start with the proxy stopped shows all three nodes in error, hazards in step |
 | 10.3 | Held events while the cockpit is down, from **D26** | leader, `cockpit.py` | On return they appear exactly once, in order, marked replayed, then live events |
 
-### P11. Relay and the multi-link convergence window, checkoff steps 5 and 9  [step 5 VERIFIED on hardware; step 9 (STM32 master) not yet run]
+### P11. Relay and the multi-link convergence window, checkoff steps 5 and 9  [DONE, steps 5 and 9 verified on hardware]
 
 **The scenario, and why it could not work before.** Checkoff step 5 pulls the
 cockpit off one bus and the drivetrain off the other, so those two cannot hear
@@ -1452,8 +1452,9 @@ compensated on the very next reference.
 **Re-measured on hardware, Pi master, Pi off B and N3 off A: FL/RL mean 400 us,
 standard deviation 184.9 us**, inside the 1 ms checkoff limit (was 1.966 ms).
 Measured together with the receive-silence link detector below, which made
-single link pulls produce exactly one entry with no flapping. Still to run:
-checkoff step 9, the same relayed sync with an STM32 as master.
+single link pulls produce exactly one entry with no flapping. **Step 9 verified too:** STM32 master, the other STM32 reachable only through
+the Pi's relay, FL/RL mean and standard deviation both under 1 ms, and no step
+on the edges when the jumpers were restored.
 
 | # | Task | Where | Done when |
 |---|---|---|---|
