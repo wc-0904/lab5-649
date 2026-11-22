@@ -607,7 +607,30 @@ Settled here, subject to what the scope says:
 - **One time base.** F_k is now the TIM5 counter rather than `k_cycle_get_32()`,
   so the deadline is written straight to the compare register with no conversion.
 
-**D22 is deliberately still open.** See the resume block above.
+**D22, PPS on the Pi: a thread on absolute deadlines, and measure it.**
+`pi/demo/pps.py` sleeps with `clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME)`
+rather than a relative sleep, so the time spent computing the next deadline
+cannot accumulate into it and a late wakeup is absorbed instead of carried
+forward. It asks for `SCHED_FIFO` on that thread alone, which needs root; without
+it the thread still runs and the jitter is simply worse, which the exit summary
+says rather than hides. The clock is `CLOCK_REALTIME`, the same one stamped into
+REF, so the edge and the reference cannot disagree about when a second begins.
+
+Rejected: pigpio's hardware timed waveforms, which would produce a better edge
+but by a different mechanism than the one the cockpit actually schedules against,
+and the kernel `pps-gpio` driver, which is an input for disciplining a clock from
+an external pulse rather than an output.
+
+The thread records the gap between the deadline it asked for and the clock
+immediately after the GPIO write, and the cockpit prints count, mean and worst at
+exit. **That measurement is the deliverable, not the edge.** The Nucleos reach
+19.5 us because a comparator moves their pins; the Pi cannot, and saying so with
+a number is a better report paragraph than an edge that matches because the
+jitter was hidden. It also sets up the extra credit question about keeping the
+GUI alive through a cockpit failure and why the Nucleos cannot do it.
+
+Fall back to pigpio only if the measured error turns out to be milliseconds
+rather than hundreds of microseconds.
 
 | # | Task | Where | Done when |
 |---|---|---|---|

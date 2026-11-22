@@ -14,6 +14,7 @@ from protocol import (APPEND, APPEND_ACK_BASE, LAB5_FILTER_ID, LAB5_FILTER_MASK,
                       REF, is_consensus,
                       CTRL, FAULT, HB1, HB2, HB3, BLINK, FORCE, CATALOG, FAULT_IDS,
                       CAN_FRAME, Dedup, payload, valid, decode_wheel, origin)
+from pps import Pps
 from time_sync import local_cycles as local_cycles_now
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "part0"))
 from can_check import discover
@@ -81,6 +82,10 @@ class Cockpit:
     def __init__(self, args):
         self.args = args
         self.pins = Pins(args.no_gpio)
+        # The Pi is the default time master, so its edge is the baseline every
+        # STM32 edge is compared against. It is also the worst edge in the
+        # cluster, for reasons pps.py documents.
+        self.pps = Pps(self.pins, Pins.PPS, enabled=not args.no_gpio and not args.no_pps)
         self.selector = selectors.DefaultSelector()
         self.can = []
         for bus, name in discover().items():
@@ -386,6 +391,7 @@ class Cockpit:
 
     def run(self):
         """Service critical CTRL first, then bounded socket batches and timers."""
+        self.pps.start()
         started = time.monotonic()
         next_hb = next_monitor = next_drift = started
         try:
@@ -416,6 +422,7 @@ class Cockpit:
         except KeyboardInterrupt:
             pass
         finally:
+            self.pps.close()
             self.pins.close()
             self.selector.close()
             for sock in [*self.can, self.udp]:
@@ -430,6 +437,13 @@ class Cockpit:
             if timings:
                 print(f"UDP dequeue -> first CAN write: n={len(timings)} max={max(timings):.1f} us "
                       f"p99={timings[min(len(timings)-1, int(len(timings)*.99))]:.1f} us")
+            edges, mean_us, worst_us, realtime = self.pps.stats()
+            if edges:
+                print(f"PPS edges={edges} mean error={mean_us:+.1f} us "
+                      f"worst={worst_us:+d} us sched_fifo={realtime}")
+                if not realtime:
+                    print("PPS ran at normal priority; run as root for SCHED_FIFO "
+                          "and a smaller spread.")
             print(self.agent.summary())
             print(f"CAN send errors A/B={self.send_errors}; malformed={self.bad_frames}; "
                   f"sample overflow={self.sample_overflow}; dummy force={self.force}; relayed A/B={self.forwarded}")
@@ -445,6 +459,8 @@ def main():
     parser.add_argument("--duration", type=float, default=0)
     parser.add_argument("--csv", type=Path)
     parser.add_argument("--no-gpio", action="store_true", help="functional check only; no scope markers")
+    parser.add_argument("--no-pps", action="store_true",
+                        help="leave the PPS pin alone; the thread asks for SCHED_FIFO")
     parser.add_argument("--inject-invalid", action="store_true", help="next CTRL throttle=101, valid CRC")
     parser.add_argument("--force-port", type=int, help="optional one-byte dummy FORCE reply UDP port")
     args = parser.parse_args()
