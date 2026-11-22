@@ -320,6 +320,31 @@ void lab_can_send(uint16_t id, uint8_t data[8])
  * @param bus Physical index 0 for A, 1 for B.
  * @return True when the controller is error active and not close to error passive.
  */
+/** @brief Read the controller's state and error counters, for diagnosis.
+ * @param bus Physical index 0 for A, 1 for B.
+ * @param state Destination for enum can_state, or -1 when unreadable.
+ * @param tx_errors Destination for the transmit error counter.
+ * @param rx_errors Destination for the receive error counter.
+ */
+void lab_can_link_state(int bus, int *state, int *tx_errors, int *rx_errors)
+{
+	enum can_state current;
+	struct can_bus_err_cnt errors;
+
+	*state = -1;
+	*tx_errors = -1;
+	*rx_errors = -1;
+	if (bus < 0 || bus > 1 || !buses[bus].started) {
+		return;
+	}
+	if (can_get_state(buses[bus].dev, &current, &errors) != 0) {
+		return;
+	}
+	*state = (int)current;
+	*tx_errors = errors.tx_err_cnt;
+	*rx_errors = errors.rx_err_cnt;
+}
+
 bool lab_can_link_healthy(int bus)
 {
 	/*

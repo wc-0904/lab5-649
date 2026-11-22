@@ -1118,6 +1118,8 @@ void raft_client_poll(int64_t now_ms)
 	bool retry = false;
 	uint32_t local = 0;
 	uint8_t recorded = RAFT_EVENT_NONE;
+	int reported_bus = -1;
+	bool reported_down = false;
 
 	k_spinlock_key_t key = k_spin_lock(&state_lock);
 
@@ -1161,6 +1163,8 @@ void raft_client_poll(int64_t now_ms)
 			continue;
 		}
 		state.link_down[bus] = down;
+		reported_bus = bus;
+		reported_down = down;
 		state.pending_event = raft_event_link(LAB_NODE_ID, bus + 1, !down);
 		state.pending_request = ++state.next_request;
 		state.pending_sent_ms = now_ms;
@@ -1194,6 +1198,24 @@ void raft_client_poll(int64_t now_ms)
 	}
 	k_spin_unlock(&state_lock, key);
 
+	if (reported_bus >= 0 && LAB5_CFG_DEBUG) {
+		int can_state;
+		int tx_errors;
+		int rx_errors;
+
+		/*
+		 * Print what the controller actually saw. A link reported down
+		 * is either a real electrical fault or a threshold set too
+		 * tight, and the counters separate the two without a scope: the
+		 * transmit counter rises by eight per failed transmission, so a
+		 * value near the limit is a dozen consecutive failures rather
+		 * than noise.
+		 */
+		lab_can_link_state(reported_bus, &can_state, &tx_errors, &rx_errors);
+		printk("raft: link %c %s state=%d tec=%d rec=%d\n",
+		       reported_bus == 0 ? 'A' : 'B', reported_down ? "DOWN" : "UP",
+		       can_state, tx_errors, rx_errors);
+	}
 	if (local != 0 && LAB5_CFG_DEBUG) {
 		printk("raft: append idx=%u term=%u %s\n", local, raft_term(),
 		       raft_event_name(recorded));

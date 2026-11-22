@@ -59,6 +59,19 @@ void lab_can_send_lab5(uint16_t id, const uint8_t data[8]);
  * @return True when the controller is error active and has no transmit errors.
  */
 bool lab_can_link_healthy(int bus);
+/** @brief Read the controller's state and error counters, for diagnosis.
+ *
+ * A link reported down is either a real electrical fault or a detection
+ * threshold set too tight, and those want completely different fixes. Printing
+ * the counters at the moment of the report settles which it is without a
+ * scope: the transmit counter rises by eight per failed transmission, so a
+ * value near the limit means a dozen consecutive failures rather than noise.
+ * @param bus Physical index 0 for A, 1 for B.
+ * @param state Destination for enum can_state, or -1 when unreadable.
+ * @param tx_errors Destination for the transmit error counter.
+ * @param rx_errors Destination for the receive error counter.
+ */
+void lab_can_link_state(int bus, int *state, int *tx_errors, int *rx_errors);
 /** @brief Return total dropped software RX frames.
  * @return Overflow count.
  */
