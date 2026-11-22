@@ -562,7 +562,7 @@ the only reference for absolute offset is PPS edge spread. P7 has to fix it.
 | 6.5 | `global_gettime()`, maintained continuously on every node | `time_sync.c` | Returns a corrected global time on leader and followers alike |
 | 6.6 | Periodic task printing the drift error being corrected | `lab_tasks.c` | Visible on all three consoles |
 
-### P7. PPS output  [STM32 half DONE and measured 2026-11-21; Pi half open]
+### P7. PPS output  [DONE, all three nodes measured 2026-11-21]
 
 **Measured: mean 9.14 us, standard deviation 19.48 us**, over ten consecutive
 edges with the cockpit running two minutes, N2 against N3 on A0 with grounds
@@ -587,6 +587,29 @@ A node fires at `T - d + D`, so late by 358 means `D = d + 358 = 658 us`. Only
 256 us of that is time on the wire. The rest is the Pi's transmit path: Python,
 the socket, the SocketCAN queue, the mcp251x workqueue and a 4 MHz SPI
 transaction standing between the timestamp and the first bit transmitted.
+
+**Confirmed after the correction.** With `LAB5_DELAY_COCKPIT_US` at 658 the Pi to
+N2 gap collapsed from 272.4 us to **6.99 us**, which over ten samples with a
+standard deviation of 154 us is 0.14 sigma: indistinguishable from zero. Before
+the correction the Pi led on every edge; afterwards the sign flips edge to edge,
+which is what being centred looks like. The Pi's own self measurement was stable
+across the two runs, mean lateness 85.7 then 82.4 us, worst 304 then 200.
+
+The apparent rise in spread, 105.5 to 154 us, is not real: a standard deviation
+estimated from ten samples carries about 24 percent relative error of its own.
+
+**Where the spread lives, for the report.** The Nucleo pair measures 19.5 us for
+the *difference* of two boards, so each board contributes about 19.5/sqrt(2) =
+13.8 us. Subtracting in quadrature from the three node figure:
+
+```
+Pi contribution = sqrt(154^2 - 13.8^2) = 153.4 us
+```
+
+Over 99 percent of the variance in the three node spread is the Raspberry Pi's
+scheduler; the Nucleos are almost invisible in it. That is the argument for why a
+general purpose Linux box cannot be a time reference of the same quality as the
+microcontrollers it synchronizes, and it is a measurement rather than an opinion.
 
 **The consequence is larger than the constant.** The delay belongs to the
 master's transmit path, not to the bus, so it changes when the leader changes.
