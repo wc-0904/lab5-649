@@ -135,6 +135,8 @@ static struct {
 	/* Cockpit liveness, which only the leader records. */
 	bool cockpit_known;
 	bool cockpit_alive;
+	/* Which follower the next AppendEntries is aimed at. */
+	int append_peer;
 } state;
 static struct k_spinlock state_lock;
 
@@ -564,14 +566,28 @@ void raft_append_tx(int64_t now_ms)
 
 	if (state.role == RAFT_LEADER) {
 		uint32_t last = raft_log_last_index(&state.log);
-		uint32_t nxt = last + 1;
+		uint32_t nxt;
 		bool behind;
 
-		for (int node = 1; node <= LAB5_CFG_N; node++) {
-			if (node != LAB_NODE_ID && state.next_index[node] < nxt) {
-				nxt = state.next_index[node];
-			}
-		}
+		/*
+		 * Aim each append at one follower in turn, not at whichever is
+		 * furthest behind. One identifier is broadcast to all of them,
+		 * so a header built from the minimum nextIndex is pinned by any
+		 * follower that never acknowledges: an unreachable node holds
+		 * its position for ever and nothing past it ever replicates. On
+		 * the bench, with the cockpit down, the commit index sat at 1
+		 * while the log held seven entries.
+		 *
+		 * Taking turns costs a factor of N in catch-up rate and wastes
+		 * the dead node's turns, which is the right trade: the alive
+		 * followers keep moving. Every follower accepts an entry it
+		 * already holds idempotently, so a turn spent on one does no
+		 * harm to the others.
+		 */
+		do {
+			state.append_peer = state.append_peer % LAB5_CFG_N + 1;
+		} while (state.append_peer == LAB_NODE_ID);
+		nxt = state.next_index[state.append_peer];
 		if (nxt < 1) {
 			nxt = 1;
 		}

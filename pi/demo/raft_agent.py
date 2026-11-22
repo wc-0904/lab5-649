@@ -313,6 +313,8 @@ class RaftAgent:
         self.match_index = {peer: 0 for peer in self.peers}
         self.acks = 0
         self.committed = 0
+        # Which follower the next AppendEntries is aimed at.
+        self.append_peer = 0
         # Requests already answered, so a relayed duplicate does not append twice.
         self.client_seen = {}
         self.heartbeat = config["heartbeat_ms"] / 1000
@@ -661,11 +663,20 @@ class RaftAgent:
         self.appends_sent += 1
 
     def append_payload(self):
-        """Build the AppendEntries header for the furthest behind follower.
+        """Build the AppendEntries header, aimed at one follower in turn.
+
+        One identifier is broadcast to every follower, so a header built from
+        the minimum nextIndex is pinned by any follower that never
+        acknowledges: an unreachable node holds its position for ever and
+        nothing past it replicates. Taking turns costs a factor of N in
+        catch-up rate and wastes a dead node's turns, which is the right trade,
+        and a follower accepts an entry it already holds idempotently so a turn
+        spent elsewhere does it no harm.
 
         :return: Eight bytes.
         """
-        nxt = min(self.next_index.values(), default=self.log.last_index() + 1)
+        self.append_peer = (self.append_peer + 1) % len(self.peers)
+        nxt = self.next_index[self.peers[self.append_peer]]
         nxt = max(1, min(nxt, self.log.last_index() + 1))
         prev_index = nxt - 1
         prev_term = self.log.term_at(prev_index) or 0

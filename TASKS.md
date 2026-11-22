@@ -1142,6 +1142,26 @@ steering was the leader. The leader now records its own reports directly, which
 is what the Pi's `client_report()` already did. Another instance of the pattern:
 a rule the Pi had and the firmware did not.
 
+**Second bench run: the redirect spam is gone, and it exposed a worse bug.**
+With the cockpit down the leader appended `COCKPIT_ERROR`, reached `mode=FAIL`,
+and recorded its own reports locally. But **the commit index sat at 1 while the
+log held seven entries**, for twelve seconds.
+
+`raft_append_tx()` built the header from the **minimum nextIndex across all
+followers**, and that array includes the cockpit, which was dead and never
+acknowledged. Its nextIndex stayed at 1 for ever, so the minimum stayed at 1,
+so the leader re-sent entry 1 on every round and nothing past it replicated.
+**One unreachable node pinned the entire replication stream**, which defeats the
+whole point of tolerating one failure. The Pi had the identical flaw; it never
+showed because the Pi was always leader with both Nucleos alive.
+
+A single broadcast identifier cannot serve followers at different positions, so
+each append is now aimed at **one follower in turn**. That costs a factor of N
+in catch-up rate and wastes a dead node's turns, which is the right trade: the
+alive followers keep moving, and a follower accepts an entry it already holds
+idempotently, so a turn spent elsewhere does it no harm. Three tests cover it,
+including the exact bench case of a silent node and a seven entry log.
+
 | # | Task | Where | Done when |
 |---|---|---|---|
 | 10.1 | `COCKPIT_OK` and `COCKPIT_ERROR` entries and their effect | `raft_agent.c`, `network_state.c` | Enter and leave failure mode from the log |

@@ -24,8 +24,8 @@ from network_state import event_link, event_node  # noqa: E402
 from protocol import (CLIENT_REQ_BASE, REQ_VOTE_BASE, VOTE_BASE,  # noqa: E402
                       lab5_id_for)
 from raft_agent import (CANDIDATE, FOLLOWER, LEADER, RaftAgent,  # noqa: E402
-                        REPLY_COMMITTED, REPLY_REDIRECT, append_encode,
-                        reply_encode,
+                        REPLY_COMMITTED, REPLY_REDIRECT, append_decode,
+                        append_encode, reply_encode,
                         vote_decode, vote_encode, vote_request_decode,
                         vote_request_encode)
 
@@ -520,6 +520,58 @@ class SelfReportTests(unittest.TestCase):
         h.agent.on_append(append_encode(9, 0, 0, 0))
         self.assertEqual(len(h.agent.self_events), 3)
         self.assertIsNone(h.agent.pending_event)
+
+
+class ReplicationProgressTests(unittest.TestCase):
+    """A node that never acknowledges must not stall the others.
+
+    One identifier is broadcast to every follower, so a header built from the
+    minimum nextIndex is pinned by any follower that never answers. On the
+    bench, with the cockpit down, the commit index sat at 1 while the log held
+    seven entries, because the dead cockpit's nextIndex stayed at 1 for ever.
+    """
+
+    def setUp(self):
+        """Load the real cluster configuration."""
+        self.config = load(ROOT / "config" / "cluster.conf")
+
+    def leader_with_entries(self, count):
+        """Build a leader holding some entries.
+
+        :param count: Entries to append.
+        :return: Harness.
+        """
+        h = Harness(1, self.config)
+        for index in range(count):
+            h.agent.log.append(h.agent.term, event_node(2, True))
+            del index
+        return h
+
+    def test_the_header_visits_every_follower(self):
+        """Otherwise one of them is never served at all."""
+        h = self.leader_with_entries(3)
+        h.agent.next_index = {2: 1, 3: 3}
+        seen = set()
+        for _ in range(6):
+            seen.add(append_decode(h.agent.append_payload())["prev_index"])
+        self.assertEqual(seen, {0, 2})
+
+    def test_a_silent_follower_does_not_pin_the_others(self):
+        """The bench failure: a dead node held the stream at index 1."""
+        h = self.leader_with_entries(7)
+        # Node 2 is keeping up; node 3 never answers and sits at 1.
+        h.agent.next_index = {2: 7, 3: 1}
+        offered = [append_decode(h.agent.append_payload())["prev_index"]
+                   for _ in range(6)]
+        self.assertIn(6, offered)
+        self.assertIn(0, offered)
+
+    def test_the_commit_index_advances_with_one_node_down(self):
+        """Majority is two of three, so one silent node must not block commit."""
+        h = self.leader_with_entries(4)
+        h.agent.match_index = {2: 4, 3: 0}
+        self.assertTrue(h.agent.advance_commit())
+        self.assertEqual(h.agent.commit_index, 4)
 
 
 if __name__ == "__main__":
