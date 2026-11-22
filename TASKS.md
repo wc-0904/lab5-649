@@ -1314,6 +1314,35 @@ the Pi had a rule the firmware lacked. Both directions have now bitten, which is
 the real argument for the two implementations being tested against each other
 rather than written twice.
 
+**Reverted: the graph self-healing check.** The idea was that a node absent
+from the committed graph should re-report itself, because entries it wrote can
+vanish without any term change when a consistency mismatch truncates the tail,
+and catching each such path one at a time does not converge.
+
+It caused two separate log floods on the bench, reaching index 3852 and then
+733 of one repeated entry, and after two guards the reason it kept firing was
+still not understood. **It is reverted.** Two things made it dangerous:
+
+- "The committed graph disagrees with me" is *continuously true* for a window
+  after every report, because commit always lags the log. That makes it a
+  feedback input rather than an error signal.
+- A follower's retry generates a **new request id** each time, which defeats
+  the leader's duplicate suppression entirely, so every repeat appends. The
+  suppression keys on the request id, which only protects against a *resent*
+  request, not a *re-issued* one.
+
+The underlying problem is real and still open: **a node whose entries are
+truncated away has no path back into the graph** except `adopt_term()` and
+stepping down, and a mismatch truncation goes through neither. A correct fix
+needs to be designed rather than bolted on, and must not re-derive its trigger
+from a value that lags its own action. Candidates: make the client retry reuse
+its request id so suppression works; or have the *leader* notice a node absent
+from the graph while heartbeating and record it, since the leader sees the
+committed state without a lag relative to its own log.
+
+Kept from that work: serialising self-reports on the commit index, and the
+cockpit's own link detection, both of which stand on their own.
+
 Still to do: 11.3, the bench work, where the open question is whether a node
 reachable only by relay still holds FL and RL within 1 ms. The relay adds a
 queue hop and a transmit worker to the reference path, which shifts that node's

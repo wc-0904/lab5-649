@@ -1131,29 +1131,6 @@ void raft_client_poll(int64_t now_ms)
 	k_spinlock_key_t key = k_spin_lock(&state_lock);
 
 	/*
-	 * Self healing: if the committed graph does not show what this node
-	 * knows about itself, say it again. Entries this node wrote can vanish
-	 * without any term change, because a plain consistency mismatch
-	 * truncates the tail, so catching each path that invalidates them one
-	 * at a time does not converge. Comparing against the committed graph
-	 * does: whatever the cause, the disagreement is visible here and
-	 * repairs itself within one debounce. On the bench a node that had been
-	 * truncated to a single entry led the cluster while absent from its own
-	 * graph, as nodes=CS. with the drivetrain leading.
-	 *
-	 * Re-reporting costs nothing when nothing changed, because the leader
-	 * answers a repeated request without appending a second copy.
-	 */
-	if (!network_node_up(&state.net, LAB_NODE_ID)) {
-		state.self_reported = false;
-	}
-	for (int bus = 0; bus < 2; bus++) {
-		if (!state.link_down[bus] &&
-		    !network_link_up(&state.net, LAB_NODE_ID, bus + 1)) {
-			state.link_down[bus] = true;
-		}
-	}
-	/*
 	 * This node's own existence, reported before its links. D15 says the
 	 * owner reports its own links; the same argument applies to the node
 	 * itself, and nothing else can do it: node-up entries used to come only
