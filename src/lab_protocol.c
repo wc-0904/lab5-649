@@ -322,3 +322,65 @@ int lab_origin(uint32_t id, const uint8_t data[8])
 	}
 	return id == LAB_FORCE ? 2 : 0;
 }
+
+/** @brief Encode a vote request.
+ * @param data Eight bytes to fill.
+ * @param request Request to encode.
+ */
+void lab5_vote_request_encode(uint8_t data[8], const struct lab5_vote_request *request)
+{
+	data[0] = request->term;
+	data[1] = (uint8_t)request->last_index;
+	data[2] = (uint8_t)(request->last_index >> 8);
+	data[3] = request->last_term;
+	data[4] = 0;
+	data[5] = 0;
+	data[6] = 0;
+	data[7] = 0;
+}
+
+/** @brief Decode a vote request.
+ * @param data Eight received bytes.
+ * @return Decoded request.
+ */
+struct lab5_vote_request lab5_vote_request_decode(const uint8_t data[8])
+{
+	struct lab5_vote_request request = {
+		.term = data[0],
+		.last_index = (uint16_t)((uint16_t)data[1] | ((uint16_t)data[2] << 8)),
+		.last_term = data[3],
+	};
+
+	return request;
+}
+
+/** @brief Encode a vote.
+ * @param data Eight bytes to fill.
+ * @param vote Vote to encode.
+ */
+void lab5_vote_encode(uint8_t data[8], const struct lab5_vote *vote)
+{
+	data[0] = vote->term;
+	data[1] = vote->granted;
+	data[2] = vote->candidate;
+	data[3] = 0;
+	data[4] = 0;
+	data[5] = 0;
+	data[6] = 0;
+	data[7] = 0;
+}
+
+/** @brief Decode a vote.
+ * @param data Eight received bytes.
+ * @return Decoded vote.
+ */
+struct lab5_vote lab5_vote_decode(const uint8_t data[8])
+{
+	struct lab5_vote vote = {
+		.term = data[0],
+		.granted = data[1],
+		.candidate = data[2],
+	};
+
+	return vote;
+}

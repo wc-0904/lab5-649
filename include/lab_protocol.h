@@ -116,6 +116,29 @@ struct lab5_reply {
 };
 /** @brief Reply results. */
 enum lab5_reply_result { LAB5_REPLY_COMMITTED = 0, LAB5_REPLY_REDIRECT = 1 };
+/** @brief A candidate asking for a vote.
+ *
+ * Wire layout, little endian: byte 0 the candidate's term, bytes 1..2 the index
+ * of the last entry in its log, byte 3 that entry's term. The identifier says
+ * which node is standing, so no candidate field is needed.
+ *
+ * The log fields are what stop a node that missed entries from winning. Raft
+ * grants a vote only to a candidate whose log is at least as up to date as the
+ * voter's, which is what guarantees a committed entry survives an election.
+ * Here that matters directly: an STM32 that was isolated has a short log, and
+ * electing it would lose link state the rest of the cluster had agreed on.
+ */
+struct lab5_vote_request { uint8_t term; uint16_t last_index; uint8_t last_term; };
+/** @brief A vote, granted or refused.
+ *
+ * Wire layout: byte 0 the voter's term, byte 1 nonzero when granted, byte 2 the
+ * candidate being answered. The identifier carries which node voted.
+ *
+ * The candidate field is needed for the same reason the reply frame carries a
+ * target: two candidates can stand in the same term, and a vote meant for one
+ * must not count towards the other's majority.
+ */
+struct lab5_vote { uint8_t term; uint8_t granted; uint8_t candidate; };
 /** @brief Largest offset from LAB5_EPOCH_US the 48 bit REF field can carry. */
 #define LAB5_REF_US_MAX 0xffffffffffffULL
 /** @brief Central timing choices in milliseconds; recovery is measured separately. */
@@ -198,6 +221,26 @@ void lab5_reply_encode(uint8_t data[8], const struct lab5_reply *reply);
  * @return Decoded fields.
  */
 struct lab5_reply lab5_reply_decode(const uint8_t data[8]);
+/** @brief Encode a vote request.
+ * @param data Eight bytes to fill.
+ * @param request Request to encode.
+ */
+void lab5_vote_request_encode(uint8_t data[8], const struct lab5_vote_request *request);
+/** @brief Decode a vote request.
+ * @param data Eight received bytes.
+ * @return Decoded request.
+ */
+struct lab5_vote_request lab5_vote_request_decode(const uint8_t data[8]);
+/** @brief Encode a vote.
+ * @param data Eight bytes to fill.
+ * @param vote Vote to encode.
+ */
+void lab5_vote_encode(uint8_t data[8], const struct lab5_vote *vote);
+/** @brief Decode a vote.
+ * @param data Eight received bytes.
+ * @return Decoded vote.
+ */
+struct lab5_vote lab5_vote_decode(const uint8_t data[8]);
 /** @brief Build a per-node Lab 5 identifier.
  * @param base One of the LAB5_*_BASE values.
  * @param node Node ID from enum lab_node.
