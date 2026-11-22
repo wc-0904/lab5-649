@@ -19,7 +19,8 @@ not elect among themselves first.
 
 | What | Result | Where recorded |
 |---|---|---|
-| PPS spread, cockpit master | mean 6.99 us, sd 153.99 us (STM32 pair 9.14 / 19.48 us) | P7 |
+| PPS, N2 vs N3, cockpit master | mean 9.14 us, sd 19.48 us over 10 edges | P7 |
+| PPS, Pi vs Nucleo | mean 6.99 us, sd 153.99 us (Python scheduling on the Pi) | P7 |
 | FL/RL, direct | mean 2.5 us, sd 3.05 us | P8 |
 | FL/RL, relayed, Pi master (step 5) | mean 400 us, sd 184.9 us; was 1.966 ms before relay delay compensation | P11 |
 | FL/RL, relayed, STM32 master (step 9) | under 1 ms, no step on restore | P11 |
