@@ -1,9 +1,51 @@
 # Lab 5 remaining work and open design decisions
 
-Status as of 2026-11-21. The handout is due 2026-11-18 23:59, but late days cover the
-schedule, so this list is ordered by dependency rather than by the calendar.
-P0 through P6 are done and verified on hardware; P7 through P15 remain. The
-paragraph below describes the starting point this work was built from.
+Status as of 2026-11-22. **P0 through P12 are done and verified on hardware.** P13
+(rehearsal), P14 (report) and the optional P15 remain.
+
+## Handoff: picking up at P13
+
+Everything below P12 is a record of how the implementation got here, including every
+bench bug and why each fix took the shape it did. It is the raw material for the report
+and for the verbal questions.
+
+**Bench setup and commands** are in `README.md` (WSL path) and CLAUDE.md "What builds".
+Short version: two Nucleos over WSL with usbipd, the Pi over SSH. Build and flash both
+Nucleos selecting the ST-LINK by USB location (`adapter usb location 1-1` is N2, `1-2`
+is N3), `git pull` on the Pi, and start `pi/demo/cockpit.py` **last** so the Nucleos do
+not elect among themselves first.
+
+**Verified on hardware, with the numbers to cite:**
+
+| What | Result | Where recorded |
+|---|---|---|
+| PPS spread, cockpit master | mean 6.99 us, sd 153.99 us (STM32 pair 9.14 / 19.48 us) | P7 |
+| FL/RL, direct | mean 2.5 us, sd 3.05 us | P8 |
+| FL/RL, relayed, Pi master (step 5) | mean 400 us, sd 184.9 us; was 1.966 ms before relay delay compensation | P11 |
+| FL/RL, relayed, STM32 master (step 9) | under 1 ms, no step on restore | P11 |
+| Link pulls (step 4) | one entry per change, same index on all nodes, term unchanged | P11, P12 |
+| Isolation (step 10) | term changes only when the leader is isolated, once; leader records NODE_X_DOWN | P12 |
+
+**P13 to do:** run the ten-step checkoff twice from cold; run the three handout demo
+scenarios and save the `commit ... net` line from every console after each; capture
+about 30 s of PPS lines per node and the scope traces (PPS spread, FL/RL, step 6
+handover). The drift section of the report must be written from those PPS lines.
+
+**Known caveats worth knowing before the demo:**
+
+- `LAB5_DELAY_STM32_US` (400 us) is an estimate, never measured; the cockpit's 658 us
+  was measured. `LAB5_RELAY_DELAY_US` (2000 us) was calibrated from one measurement with
+  a Nucleo relaying; step 9 (Pi relaying) still passed with it.
+- N3's bus A wiring had an intermittent contact (`tec=0`, high `rec` in the link print
+  means corrupted frames, not a clean disconnect). Reseat before the demo.
+- On WSL, flashing can break the usbipd link: the miniterm hangs or dies with `Errno 5`
+  and `dmesg` shows `vhci_hcd ... -104`. Fix with `usbipd detach` then `usbipd attach
+  --wsl` in an admin PowerShell. Never pipe miniterm into `grep`; it buffers and shows
+  nothing.
+- The three handout ambiguities (end of CLAUDE.md) were never confirmed with staff.
+  The positions taken are in the assumptions section at the end of this file.
+
+The paragraph below describes the starting point this work was built from.
 What existed at the start was the Lab 3 firmware this
 directory was stripped down to: dual-CAN transport, the preemptive task set, the Lab 3
 CAN catalog, and the Pi cockpit. See `CLAUDE.md` for the spec and the current state.

@@ -20,19 +20,22 @@ nodes stay reachable by relaying through the other bus or the third node.
 
 ## Current state of this directory
 
-Nothing in Part 1 through Part 7 above is implemented yet. `lab5-649/` started as a copy
-of `lab3-649/` at its final state and has since been stripped to the Lab 3 firmware that
-Lab 5 builds on, plus the Lab 5 handout PDF and this `CLAUDE.md`. The Lab 2 carry-over
+**Status 2026-11-22: implementation is complete.** P1 through P12 of `TASKS.md` are done
+and verified on the three-node bench: config, pre-defined leader boot, REF and APPEND,
+log and state machine, client and routing, time sync, PPS, blinkers, election and
+handover, failure mode and replay, relay with the two-link convergence window, and
+isolation. What remains is P13 (rehearsal and data capture), P14 (the report) and the
+optional P15; see the handoff section at the top of `TASKS.md`.
+
+`lab5-649/` started as a copy of `lab3-649/` at its final state, was stripped to the Lab 3
+firmware that Lab 5 builds on, and Lab 5 was built on top of it. The Lab 2 carry-over
 code, the Lab 3 and Lab 4 report packages, and the stale build trees are gone; the whole
 directory is now about 1 MB. Things worth knowing before touching anything:
 
 - **`TASKS.md` holds the remaining work in proposed order and every open design
   decision.** Start there; the decision IDs D1 to D30 are referenced from the task rows.
-- **P1 of `TASKS.md` is implemented**, so this is no longer bare Lab 3 code. Added:
-  `config/cluster.conf`, `tools/gen_config.py`, `pi/demo/cluster_config.py`, the
-  `enum lab5_id` catalog, five new GPIO outputs and a boot pin walk. Built against
-  Zephyr 4.4.99 with SDK 1.0.1 and flashed to both Nucleos; both report
-  `Task startup: 0` and the same config hash.
+- **Built against Zephyr 4.4.99 with SDK 1.0.1** and flashed to both Nucleos. The Pi
+  side (`pi/demo/`) mirrors the firmware's Raft and time sync line for line in Python.
 - **This is a git repository now**, initialised at P1. `lab3-649/.git` still holds the
   full pre-cleanup tree if anything removed earlier is wanted back.
 - **The project is `lab5_consensus`** and `setup.sh` uses `lab5_*` variables. The Lab 3
@@ -81,7 +84,13 @@ Both build directories were deleted, so the first build is a full one.
 | `src/lab_protocol.c` | CAN catalog, CRC-8/ATM, payload validation, frame origin. |
 | `src/lab_io.c` | GPIO/PWM outputs and test points. |
 | `src/lab_can.c` | Dual MCP2515 transport, per-bus TX workers, RX queue, relay forward. |
-| `src/lab_tasks.c` | Ten preemptive task slots, the whole Lab 3 application. |
+| `src/lab_tasks.c` | Preemptive task slots: the Lab 3 application plus dispatch of Lab 5 frames and the monitor that drives the agent. |
+| `src/raft_agent.c` | Raft: roles, election, AppendEntries, commit, client requests, link and node presence reporting. |
+| `src/raft_log.c` | The fixed-size log ring and event encoding. |
+| `src/network_state.c` | The state machine: `addLink`/`dropLink`/`addNode`/`dropNode`, replayed from the log. |
+| `src/time_sync.c` | `global_gettime()`: base, drift ratio over a 1 s window, one way delay. |
+| `src/pps.c` | TIM5 compare on PA0: the PPS edge, armed in hardware, refined every 20 ms. |
+| `src/election.c` | Seeded election timeout RNG (see `tools/find_seed.py`). |
 
 Keep it that way: a new module means a new `.c`/`.h` pair **and** a new `target_sources`
 line. Nothing in `src/` is dead code any more, so a file being present now does mean it
@@ -118,8 +127,8 @@ peripherals are disabled. The three Lab 2 bindings were removed with their drive
 patches the MCP2515 driver so both RX workers run preemptive at priority 0.
 
 `prj.conf` enables CAN/MCP2515 at 500 kbit/s, SPI, GPIO, PWM, watchdog, logging and
-`CONFIG_NUM_PREEMPT_PRIORITIES=16`, with `CONFIG_DEBUG_OPTIMIZATIONS=y`. There is no
-POSIX configuration in it, so `clock_settime()` is not reachable from the current build.
+`CONFIG_NUM_PREEMPT_PRIORITIES=16`, with `CONFIG_DEBUG_OPTIMIZATIONS=y`. POSIX timers are enabled
+for `clock_settime()`, which is called once at first sync (D19).
 
 ### Pi side and host tooling
 
@@ -128,9 +137,11 @@ POSIX configuration in it, so `clock_settime()` is not reachable from the curren
   `protocol.py`, `requirements.txt`. This is the code the Lab 5 `cockpit` node grows out of.
 - `pi/part0/` and `pi/part1/` are historical bring-up; `pi/part1/check_traffic.py` expects
   the retired 0x702/0x703 IDs and does not validate the current demo.
-- `tests/test_demo.py` is the only test left, host-only, 21 cases, passing:
-  `python3 -m unittest discover -s tests -p test_demo.py -v`. `tools/` holds four Python
-  analysis scripts. None of these build or flash firmware.
+- `tests/` holds the host-only suite, 234 cases, passing:
+  `python3 -m unittest discover -s tests -p "test_*.py"`. Several tests compile the real C
+  with the host compiler and compare it byte for byte with the Python mirror. `tools/`
+  holds Python analysis scripts plus `gen_config.py` and `find_seed.py`. None of these
+  build or flash firmware.
 
 ### What was removed, and from where
 
