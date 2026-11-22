@@ -1173,9 +1173,31 @@ commit idx=7 net nodes=.SD  links=..1212 mode=FAIL
 ```
 
 No cockpit, both Nucleos up on both buses, failure mode from the committed
-`COCKPIT_ERROR`. With the cockpit restarted it steps down, replays its held
-events marked `replayed`, `COCKPIT_OK` lands and every node returns to
-`nodes=CSD links=121212 mode=OK`.
+`COCKPIT_ERROR`.
+
+The recovery half, on the same image, is checkoff step 7 almost verbatim:
+
+```
+raft: stepping down, term=52 leader is elsewhere
+raft: event idx=1 term=52 COCKPIT_ERROR replayed
+raft: event idx=2 term=52 NODE_steering_UP replayed
+...
+raft: event idx=7 term=52 CANLINK_drivetrain_2_UP replayed
+raft: event idx=8 term=52 COCKPIT_OK
+raft: event idx=9 term=52 NODE_cockpit_UP
+```
+
+Seven held events, each exactly once, in order, marked; then four live events
+unmarked. Both Nucleos then walk `commit idx=8` through `idx=11` to
+`nodes=CSD links=121212 mode=OK` as `COCKPIT_OK` clears failure mode and the
+cockpit re-reports itself through the STM32 leader.
+
+**The replayed boundary corrected itself.** An earlier run marked only index 1,
+because during catch-up the leader reports a commit index that lags its real
+one, and that is the value the boundary is taken from. Aiming each append at one
+follower in turn removed the lag, so the leader was committed to 7 when the
+cockpit arrived and the line fell exactly where it should. No separate fix was
+needed.
 
 | # | Task | Where | Done when |
 |---|---|---|---|
