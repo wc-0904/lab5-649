@@ -46,8 +46,13 @@ bool raft_synced(void);
  * @param local_cycles Cycle counter captured in the receive callback, which is
  *        the F_k of the sync arithmetic and is not the same instant as
  *        local_us: that one includes the queue wait.
+ * @param relayed True when this copy arrived through another node's relay
+ *        rather than directly, which adds a second one way delay in series
+ *        with the master's own and must be compensated separately
+ *        (TASKS.md D18).
  */
-void raft_on_ref(const uint8_t data[8], uint64_t local_us, uint32_t local_cycles);
+void raft_on_ref(const uint8_t data[8], uint64_t local_us, uint32_t local_cycles,
+		bool relayed);
 /** @brief Age out the time master when references stop arriving.
  *
  * Called periodically from the monitor task. SYNC must mean that this node is

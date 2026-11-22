@@ -389,5 +389,85 @@ class AgentSyncTests(unittest.TestCase):
         self.assertEqual(agent.master_offset_us, 0)
 
 
+class RelayDelayTests(unittest.TestCase):
+    """A relayed reference needs a second, additional one way delay.
+
+    Checkoff steps 5 and 9 pull two links so a node is reachable only through a
+    third one, which means its REF arrives as a relayed copy: queued by the
+    bridging node, picked up by a separate thread, and retransmitted on the
+    other bus. That adds real transit time the per-master constants were never
+    calibrated to include, because they were measured from direct reception.
+
+    On the bench, before this compensation existed, the FL/RL skew between a
+    directly synced node and one reachable only by relay measured 1.966 ms
+    mean, 0.23 ms standard deviation, in exactly the two-link-pulled topology
+    step 5 builds: well over the 1 ms the checkoff allows. A directly synced
+    pair had already measured in the tens of microseconds, so that skew is
+    attributable almost entirely to the relay hop.
+    """
+
+    def agent(self, node_id):
+        """Build an agent that records what it would transmit.
+
+        :param node_id: Numeric ID this agent runs as.
+        :return: The agent.
+        """
+        config = load_cluster_config(ROOT / "config" / "cluster.conf")
+        return RaftAgent(config, node_id, lambda can_id, data: None)
+
+    def test_delay_for_adds_the_relay_delay_on_top_of_the_master_s_own(self):
+        """The two delays are physically in series: master transmit, then
+        relay transmit. The model must add them, not pick one or the other.
+        """
+        from time_sync import DELAY_COCKPIT_US, DELAY_RELAY_US, DELAY_STM32_US
+        from raft_agent import delay_for
+
+        self.assertEqual(delay_for(1, relayed=False), DELAY_COCKPIT_US)
+        self.assertEqual(delay_for(1, relayed=True),
+                         DELAY_COCKPIT_US + DELAY_RELAY_US)
+        self.assertEqual(delay_for(2, relayed=False), DELAY_STM32_US)
+        self.assertEqual(delay_for(2, relayed=True),
+                         DELAY_STM32_US + DELAY_RELAY_US)
+
+    def test_a_relayed_reference_sets_a_larger_delay_than_a_direct_one(self):
+        """The exact path a relayed REF takes through the agent."""
+        from time_sync import DELAY_RELAY_US
+
+        direct = self.agent(2)
+        direct.on_ref(ref_encode(2000000000000000, 0), 0, relayed=False)
+        relayed = self.agent(2)
+        relayed.on_ref(ref_encode(2000000000000000, 0), 0, relayed=True)
+        self.assertEqual(relayed.sync.delay_us - direct.sync.delay_us,
+                         DELAY_RELAY_US)
+
+    def test_the_same_master_clock_reads_later_when_relayed(self):
+        """The bug directly: identical input, different compensated time.
+
+        Two nodes receiving the same master clock at the same instant, one
+        directly and one by relay, must not disagree about global time by
+        more than the ratio's own settling noise, or FL/RL skew reappears.
+        """
+        master_us = 2000000000000000
+        direct = self.agent(2)
+        direct.on_ref(ref_encode(master_us, 0), 0, relayed=False)
+        relayed = self.agent(3)
+        relayed.on_ref(ref_encode(master_us, 0), 0, relayed=True)
+        from time_sync import DELAY_RELAY_US
+        self.assertEqual(relayed.global_us(0) - direct.global_us(0),
+                         DELAY_RELAY_US)
+
+    def test_switching_from_direct_to_relayed_mid_stream_is_compensated(self):
+        """A node can lose its direct path partway through a run; the very
+        next reference it receives by relay must apply the larger delay.
+        """
+        from time_sync import DELAY_COCKPIT_US, DELAY_RELAY_US
+
+        agent = self.agent(2)
+        agent.on_ref(ref_encode(2000000000000000, 0), 0, relayed=False)
+        self.assertEqual(agent.sync.delay_us, DELAY_COCKPIT_US)
+        agent.on_ref(ref_encode(2000000020000, 20000), 20000, relayed=True)
+        self.assertEqual(agent.sync.delay_us, DELAY_COCKPIT_US + DELAY_RELAY_US)
+
+
 if __name__ == "__main__":
     unittest.main()

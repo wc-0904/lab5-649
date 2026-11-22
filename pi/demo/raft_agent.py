@@ -605,13 +605,17 @@ class RaftAgent:
         """
         return time.clock_gettime_ns(time.CLOCK_REALTIME) // 1000 + self.master_offset_us
 
-    def on_ref(self, data, local_cycles=None):
+    def on_ref(self, data, local_cycles=None, relayed=False):
         """Apply a reference message from a remote time master.
 
         Only meaningful while following: a leader hears its own REF back on the
         other bus and must not synchronize to itself.
         :param data: Eight received bytes.
         :param local_cycles: Local counter at receipt, defaulting to now.
+        :param relayed: True when this copy arrived through another node's
+            relay rather than directly, which adds a second one way delay in
+            series with the master's own and must be compensated separately
+            (TASKS.md D18).
         :return: True when the reference was applied.
         """
         if self.is_leader():
@@ -628,7 +632,7 @@ class RaftAgent:
         self.last_contact = time.monotonic()
         # The delay belongs to the master's transmit path, so it follows the
         # master rather than being fixed for the cluster.
-        self.sync.delay_us = delay_for(self.leader)
+        self.sync.delay_us = delay_for(self.leader, relayed)
         self.sync.on_ref(master_us, local_cycles if local_cycles is not None
                          else local_cycles_now())
         self.cycle = cycle

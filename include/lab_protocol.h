@@ -186,6 +186,29 @@ enum lab5_delay {
 	LAB5_DELAY_COCKPIT_US = 658,
 	LAB5_DELAY_STM32_US = 400,
 };
+/** @brief Extra one way delay added when a reference arrived by relay.
+ *
+ * Checkoff steps 5 and 9 pull two links so a node is reachable only through a
+ * third one, which means its REF now arrives as a relayed copy: queued by the
+ * bridging node, picked up by a separate thread, and retransmitted on the other
+ * bus. That adds real transit time the per-master constants above were never
+ * calibrated to include, because they were measured from direct reception.
+ *
+ * Measured on the bench as the FL/RL skew between a directly synced node and
+ * one reachable only by relay, with the master's own constant already applied:
+ * mean 1.966 ms, standard deviation 0.23 ms, in the exact two-link-pulled
+ * topology step 5 specifies. A directly synced pair had already measured in
+ * the tens of microseconds, so that skew is attributable almost entirely to
+ * the relay hop and not to residual error in the base constant, which is why
+ * it is added on top of whichever master delay applies rather than replacing
+ * it: the two delays are physically in series, master transmit then relay
+ * transmit, and the model should say so.
+ *
+ * Without this, the relay path meets checkoff step 5's "wheel still steers,
+ * blinks and brakes" but misses its "FL and RL still within 1 ms" by about a
+ * factor of two.
+ */
+#define LAB5_RELAY_DELAY_US 2000U
 
 #define LAB5_EPOCH_US 1767225600000000ULL
 /** @brief Decoded AppendEntries acknowledgement.

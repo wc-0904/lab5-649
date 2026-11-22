@@ -283,7 +283,8 @@ static void set_system_clock(uint64_t master_us)
  * @param data Eight received bytes.
  * @param local_us Local clock when the frame was taken off the queue.
  */
-void raft_on_ref(const uint8_t data[8], uint64_t local_us, uint32_t local_cycles)
+void raft_on_ref(const uint8_t data[8], uint64_t local_us, uint32_t local_cycles,
+		 bool relayed)
 {
 	struct lab5_ref ref = lab5_ref_decode(data);
 	int64_t now = k_uptime_get();
@@ -392,9 +393,17 @@ void raft_on_ref(const uint8_t data[8], uint64_t local_us, uint32_t local_cycles
 	 * The delay belongs to the master's transmit path, so it has to follow
 	 * the master. Setting it on every reference rather than only on a
 	 * change costs one store and cannot be forgotten at a handover.
+	 *
+	 * A relayed reference is delayed further still: queued by the bridging
+	 * node, picked up by a separate thread, and retransmitted on the other
+	 * bus. That is a second delay in series with the master's own, not a
+	 * replacement for it, so it is added rather than substituted. Measured
+	 * on the bench as 1.966 ms of FL/RL skew in the exact two-link-pulled
+	 * topology checkoff step 5 builds (TASKS.md D18, D24).
 	 */
-	time_sync_set_delay_us(raft_leader() == LAB_NODE_COCKPIT ?
-			       LAB5_DELAY_COCKPIT_US : LAB5_DELAY_STM32_US);
+	time_sync_set_delay_us((raft_leader() == LAB_NODE_COCKPIT ?
+				LAB5_DELAY_COCKPIT_US : LAB5_DELAY_STM32_US) +
+			       (relayed ? LAB5_RELAY_DELAY_US : 0U));
 	if (!LAB5_CFG_DEBUG) {
 		return;
 	}

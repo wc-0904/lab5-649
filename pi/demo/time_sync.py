@@ -31,15 +31,31 @@ DELAY_COCKPIT_US = 658
 DELAY_STM32_US = 400
 #: Used until a master is known.
 DELAY_US = DELAY_COCKPIT_US
+#: Extra one way delay added when a reference arrived by relay rather than
+#: directly. Checkoff steps 5 and 9 pull two links so a node is reachable only
+#: through a third one, and that extra hop (queued, picked up by a separate
+#: thread, retransmitted) adds real transit time the per-master constants
+#: above were never calibrated to include. Measured on the bench as the FL/RL
+#: skew between a directly synced node and one reachable only by relay, with
+#: the master's own constant already applied: mean 1.966 ms, standard
+#: deviation 0.23 ms, in the exact two-link-pulled topology step 5 specifies.
+#: A directly synced pair had already measured in the tens of microseconds, so
+#: this is attributable almost entirely to the relay hop. Added on top of the
+#: master delay rather than replacing it, since the two are physically in
+#: series. Must match LAB5_RELAY_DELAY_US in include/lab_protocol.h.
+DELAY_RELAY_US = 2000
 
 
-def delay_for(node_id):
+def delay_for(node_id, relayed=False):
     """Pick the one way delay for a given master.
 
     :param node_id: Numeric ID of the node currently leading.
+    :param relayed: True when this reference arrived through another node's
+        relay rather than directly.
     :return: Delay in microseconds.
     """
-    return DELAY_COCKPIT_US if node_id == 1 else DELAY_STM32_US
+    base = DELAY_COCKPIT_US if node_id == 1 else DELAY_STM32_US
+    return base + (DELAY_RELAY_US if relayed else 0)
 #: The cycle counter is 32 bits on the STM32, so the mirror wraps the same way.
 CYCLE_MODULO = 1 << 32
 #: Backward master jump beyond which a new master has taken over, microseconds.

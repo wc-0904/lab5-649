@@ -1205,7 +1205,7 @@ needed.
 | 10.2 | Error state within 100 ms, motor braked, from **D27** | `lab_tasks.c` | Cold start with the proxy stopped shows all three nodes in error, hazards in step |
 | 10.3 | Held events while the cockpit is down, from **D26** | leader, `cockpit.py` | On return they appear exactly once, in order, marked replayed, then live events |
 
-### P11. Relay and the multi-link convergence window, checkoff steps 5 and 9  [11.1 and 11.2 WRITTEN, not yet on hardware]
+### P11. Relay and the multi-link convergence window, checkoff steps 5 and 9  [11.1 and 11.2 verified on hardware; 11.3's relay delay fix WRITTEN, awaiting re-measurement]
 
 **The scenario, and why it could not work before.** Checkoff step 5 pulls the
 cockpit off one bus and the drivetrain off the other, so those two cannot hear
@@ -1407,11 +1407,38 @@ committed state without a lag relative to its own log.
 Kept from that work: serialising self-reports on the commit index, and the
 cockpit's own link detection, both of which stand on their own.
 
-Still to do: 11.3, the bench work, where the open question is whether a node
-reachable only by relay still holds FL and RL within 1 ms. The relay adds a
-queue hop and a transmit worker to the reference path, which shifts that node's
-`base` by the relay latency. It is systematic rather than random, so it appears
-as a constant offset rather than jitter, but it has never been measured.
+**11.3 measured, and it failed, and here is why and the fix.** With the Pi off
+bus B and N3 off bus A (the exact two-link-pulled topology step 5 builds), the
+scoped FL/RL skew between N2 (direct reception) and N3 (reachable only by
+relay) was **mean 1.966 ms, standard deviation 0.23 ms**, against the 1 ms the
+checkoff allows. The low standard deviation against a large mean said this was
+a constant offset, not jitter, which is exactly what a relay queue hop and a
+retransmission predicted.
+
+The mechanism: `base = L_k + d` is supposed to equal the master's own clock at
+the instant this node captured F_k. The per-master delay constants
+(`LAB5_DELAY_COCKPIT_US`, `LAB5_DELAY_STM32_US`) were measured from **direct**
+reception, so they do not include the transit time a relayed copy picks up:
+queued by the bridging node, picked up by a separate thread, and retransmitted
+on the other bus. A node relying on relay therefore under-estimated `d`, so its
+`base`, and everything extrapolated from it, read systematically behind the
+true global time, and its blink edge toggled late relative to a directly
+synced node by very nearly the uncompensated relay latency.
+
+Fixed by adding a second delay in series: `LAB5_RELAY_DELAY_US`, measured
+directly from this skew since a directly synced pair had already measured in
+the tens of microseconds, so the 1.966 ms is attributable almost entirely to
+the relay hop. `raft_on_ref()` and the Pi's `on_ref()` now take whether the
+reference arrived relayed (the flag is already in the identifier, read before
+it gets stripped for dispatch) and add the relay delay on top of whichever
+master delay applies, rather than replacing it, because the two are physically
+in series: master transmit, then relay transmit. Four tests pin the
+composition, including that switching from direct to relayed mid stream is
+compensated on the very next reference.
+
+Not yet re-measured on hardware. The fix is reasoned from the same formula and
+the same bench number that found the problem, but the new constant itself has
+not been scoped yet; expect to come back and refine it once it is.
 
 | # | Task | Where | Done when |
 |---|---|---|---|

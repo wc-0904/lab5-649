@@ -178,7 +178,7 @@ class Cockpit:
         frame = CAN_FRAME.pack(can_id, 8, data)
         return sum(self.write_bus(bus, frame) for bus in (0, 1))
 
-    def receive_lab5(self, can_id, data, now, now_cycles=None):
+    def receive_lab5(self, can_id, data, now, now_cycles=None, relayed=False):
         """Hand a Lab 5 frame to the agent.
 
         Runs in the event loop beside the Lab 3 receive path, so nothing here
@@ -187,6 +187,9 @@ class Cockpit:
         :param data: Eight received bytes.
         :param now: Monotonic time from the caller's loop.
         :param now_cycles: Local microsecond counter captured at the socket read.
+        :param relayed: True when this copy arrived through another node's
+            relay rather than directly, which adds a second one way delay and
+            must be compensated separately (TASKS.md D18).
         """
         if can_id == LAB5_CLIENT_REDIRECT:
             # The leader's answer to one of this node's own requests.
@@ -208,7 +211,7 @@ class Cockpit:
             # A leader hears its own REF back on the other bus; on_ref ignores
             # that. While following, this is what puts the Pi on the shared
             # timeline, and SYNC then means a live master rather than self.
-            if self.agent.on_ref(data, now_cycles):
+            if self.agent.on_ref(data, now_cycles, relayed):
                 self.pins.set(Pins.SYNC, True)
             return
         for node in range(1, self.cluster["N"] + 1):
@@ -372,7 +375,8 @@ class Cockpit:
             # would otherwise be counted as malformed. The counter is read here
             # rather than inside receive_lab5 so the sync instant is as close to
             # the socket read as Python allows (TASKS.md D17).
-            self.receive_lab5(base_id, data, now, local_cycles_now())
+            self.receive_lab5(base_id, data, now, local_cycles_now(),
+                              is_relayed(can_id))
             return
         if not valid(can_id, data):
             self.bad_frames += 1

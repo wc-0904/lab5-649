@@ -305,8 +305,13 @@ static void dispatch_task(void *a, void *b, void *c)
 			relay_lab5(&rx, id);
 		}
 		if (id == LAB5_REF) {
+			/*
+			 * A relayed copy carries extra, real transit delay the
+			 * per-master constant was never calibrated to include;
+			 * raft_on_ref() adds for it separately (TASKS.md D18).
+			 */
 			raft_on_ref(rx.frame.data, (uint64_t)k_uptime_get() * 1000U,
-				    rx.cycles);
+				    rx.cycles, lab5_is_relayed(rx.frame.id));
 			finish(DISPATCH, start);
 			continue;
 		}
