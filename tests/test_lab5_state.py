@@ -53,15 +53,15 @@ int main(int argc, char **argv)
 
 	raft_log_init(&log_storage);
 	if (strcmp(mode, "accept") == 0) {
-		unsigned cur, lead, prev_index, prev_term, count, event;
+		unsigned cur, lead, prev_index, prev_term, count, entry_term, event;
 		uint32_t match;
 
-		while (scanf("%u %u %u %u %u %u", &cur, &lead, &prev_index,
-			     &prev_term, &count, &event) == 6) {
+		while (scanf("%u %u %u %u %u %u %u", &cur, &lead, &prev_index,
+			     &prev_term, &count, &entry_term, &event) == 7) {
 			enum raft_append_result r = raft_log_accept(
 				&log_storage, (uint8_t)cur, (uint8_t)lead, prev_index,
-				(uint8_t)prev_term, (uint8_t)count, (uint8_t)event,
-				&match);
+				(uint8_t)prev_term, (uint8_t)count,
+				(uint8_t)entry_term, (uint8_t)event, &match);
 
 			printf("%s %u\n", name(r), match);
 		}
@@ -240,14 +240,32 @@ class StateMachineTests(unittest.TestCase):
         # The dropped NODE_cockpit_UP is no longer reflected in the graph.
         self.assertEqual(rendered, "net nodes=... links=...... mode=OK")
 
+    @staticmethod
+    def widen(offers):
+        """Allow six-field offers, defaulting the entry term to the leader's.
+
+        Most of these tests predate the entry term being carried on the wire
+        and describe a cluster that never changed term, where the two are the
+        same. Spelling the entry term out everywhere would hide which tests
+        actually depend on them differing.
+
+        :param offers: Six or seven field tuples.
+        :return: Seven field tuples.
+        """
+        return [offer if len(offer) == 7
+                else (offer[0], offer[1], offer[2], offer[3], offer[4],
+                      offer[1], offer[5])
+                for offer in offers]
+
     def c_accept(self, offers):
         """Run a sequence of AppendEntries offers through the C implementation.
 
         :param offers: (current_term, leader_term, prev_index, prev_term,
-            count, event) tuples.
+            count, [entry_term,] event) tuples.
         :return: (list of (outcome, match index), first index, last index).
         """
-        feed = "".join("%d %d %d %d %d %d\n" % offer for offer in offers)
+        feed = "".join("%d %d %d %d %d %d %d\n" % offer
+                       for offer in self.widen(offers))
         result = subprocess.run([str(self.binary), "accept"], input=feed,
                                 capture_output=True, text=True, check=True)
         lines = result.stdout.splitlines()
@@ -263,7 +281,7 @@ class StateMachineTests(unittest.TestCase):
         :return: (list of (outcome, match index), first index, last index).
         """
         log = RaftLog(LOG_RING)
-        outcomes = [log.accept(*offer) for offer in offers]
+        outcomes = [log.accept(*offer) for offer in self.widen(offers)]
         return outcomes, log.first_index(), log.last_index()
 
     def assert_accept_same(self, offers):
@@ -276,6 +294,44 @@ class StateMachineTests(unittest.TestCase):
         theirs = self.c_accept(offers)
         self.assertEqual(mine, theirs)
         return mine
+
+    def test_an_entry_keeps_its_own_term_not_the_leader_s(self):
+        """The bug that deadlocked the cluster once elections began.
+
+        A follower that stamps a stored entry with the leader's current term
+        rewrites history: the leader's next consistency check on that index
+        compares its real prevLogTerm against the rewritten one, fails,
+        truncates, refills and fails again. On the bench that pinned both
+        Nucleos to storing index 1 for ever and emptied the committed graph.
+        """
+        up = event_node(1, True)
+        # Leader is in term 9, replicating an entry written back in term 4.
+        outcomes, _, _ = self.assert_accept_same([(9, 9, 0, 0, 1, 4, up)])
+        self.assertEqual(outcomes, [(APPEND_ACCEPTED, 1)])
+        # The follow-up check carries that entry's real term, and must match.
+        outcomes, _, last = self.assert_accept_same(
+            [(9, 9, 0, 0, 1, 4, up), (9, 9, 1, 4, 1, 9, COCKPIT_OK)])
+        self.assertEqual(outcomes[1], (APPEND_ACCEPTED, 2))
+        self.assertEqual(last, 2)
+
+    def test_a_rewritten_term_would_have_looped_for_ever(self):
+        """Pin the failure mode itself, so the regression is recognisable.
+
+        Offering the same entry under the leader's term and then checking
+        against its real term is the exact cycle the bench showed.
+        """
+        up = event_node(1, True)
+        outcomes, _, _ = self.assert_accept_same(
+            [(9, 9, 0, 0, 1, 9, up), (9, 9, 1, 4, 0, 0, 0)])
+        self.assertEqual(outcomes[1][0], APPEND_MISMATCH)
+
+    def test_a_duplicate_is_matched_on_the_entry_term(self):
+        """Idempotence has to compare what was stored, not who sent it."""
+        up = event_node(1, True)
+        outcomes, _, last = self.assert_accept_same(
+            [(9, 9, 0, 0, 1, 4, up), (9, 9, 0, 0, 1, 4, up)])
+        self.assertEqual(outcomes, [(APPEND_ACCEPTED, 1), (APPEND_ACCEPTED, 1)])
+        self.assertEqual(last, 1)
 
     def test_appending_onto_an_empty_log(self):
         up = event_node(1, True)

@@ -123,6 +123,8 @@ void raft_log_truncate(struct raft_log *log, uint32_t from);
  * @param prev_index Index preceding the carried entry.
  * @param prev_term Term of that preceding entry.
  * @param count Entries carried, 0 for an empty append or 1 otherwise.
+ * @param entry_term Term the carried entry was created under, which is not
+ *        the leader's current term once the log spans more than one.
  * @param event Event of the carried entry, when count is 1.
  * @param match_index Set to the highest index now known to match the leader.
  * @return What happened; only RAFT_APPEND_ACCEPTED changes the log.
@@ -130,7 +132,8 @@ void raft_log_truncate(struct raft_log *log, uint32_t from);
 enum raft_append_result raft_log_accept(struct raft_log *log, uint8_t current_term,
 					uint8_t leader_term, uint32_t prev_index,
 					uint8_t prev_term, uint8_t count,
-					uint8_t event, uint32_t *match_index);
+					uint8_t entry_term, uint8_t event,
+					uint32_t *match_index);
 /** @brief Term of a given index, for the AppendEntries consistency check.
  * @param log Log to read.
  * @param index Entry index; zero means the empty log before any entry.

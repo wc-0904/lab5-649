@@ -14,8 +14,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "pi" / "demo"))
 
-from raft_agent import (EPOCH_US, REF_CYCLE_MAX, REF_US_MAX, append_decode,
-                        append_encode, ref_decode, ref_encode)
+from raft_agent import (APPEND_INDEX_MAX, EPOCH_US, REF_CYCLE_MAX, REF_US_MAX,
+                        append_decode, append_encode, ref_decode, ref_encode)
 
 HARNESS = r"""
 #include "lab_protocol.h"
@@ -43,20 +43,22 @@ int main(int argc, char **argv)
 		       back.master);
 		return 0;
 	}
-	if (argc == 8 && argv[1][0] == 'a') {
+	if (argc == 9 && argv[1][0] == 'a') {
 		struct lab5_append h = {
 			.term = (uint8_t)strtoul(argv[2], NULL, 0),
 			.prev_index = (uint16_t)strtoul(argv[3], NULL, 0),
 			.prev_term = (uint8_t)strtoul(argv[4], NULL, 0),
 			.commit = (uint16_t)strtoul(argv[5], NULL, 0),
 			.count = (uint8_t)strtoul(argv[6], NULL, 0),
-			.event = (uint8_t)strtoul(argv[7], NULL, 0),
+			.entry_term = (uint8_t)strtoul(argv[7], NULL, 0),
+			.event = (uint8_t)strtoul(argv[8], NULL, 0),
 		};
 		lab5_append_encode(data, &h);
 		dump(data);
 		struct lab5_append back = lab5_append_decode(data);
-		printf("%u %u %u %u %u %u\n", back.term, back.prev_index, back.prev_term,
-		       back.commit, back.count, back.event);
+		printf("%u %u %u %u %u %u %u\n", back.term, back.prev_index,
+		       back.prev_term, back.commit, back.count, back.entry_term,
+		       back.event);
 		return 0;
 	}
 	return 1;
@@ -151,22 +153,49 @@ class WireFormatTests(unittest.TestCase):
         self.assertEqual(int(value), EPOCH_US)
 
     def test_append_matches_firmware(self):
-        cases = [(0, 0, 0, 0, 0, 0), (1, 0, 0, 0, 0, 0),
-                 (1, 30000, 1, 29999, 1, 20), (255, 65535, 255, 65535, 1, 255)]
-        for term, prev_index, prev_term, commit, count, event in cases:
+        cases = [(0, 0, 0, 0, 0, 0, 0), (1, 0, 0, 0, 0, 0, 0),
+                 (1, 30000, 1, 29999, 1, 1, 20),
+                 (255, APPEND_INDEX_MAX, 255, APPEND_INDEX_MAX, 1, 254, 255)]
+        for term, prev_index, prev_term, commit, count, entry_term, event in cases:
             with self.subTest(prev_index=prev_index):
                 encoded, decoded = self.c_run("a", term, prev_index, prev_term,
-                                              commit, count, event)
-                mine = append_encode(term, prev_index, prev_term, commit, count, event)
+                                              commit, count, entry_term, event)
+                mine = append_encode(term, prev_index, prev_term, commit, count,
+                                     entry_term, event)
                 self.assertEqual(encoded, mine.hex())
-                self.assertEqual(decoded, "%d %d %d %d %d %d"
-                                 % (term, prev_index, prev_term, commit, count, event))
+                self.assertEqual(decoded, "%d %d %d %d %d %d %d"
+                                 % (term, prev_index, prev_term, commit, count,
+                                    entry_term, event))
                 self.assertEqual(append_decode(mine)["prev_index"], prev_index)
+                self.assertEqual(append_decode(mine)["entry_term"], entry_term)
+
+    def test_the_entry_term_is_independent_of_the_leader_term(self):
+        """The field that was missing. A leader in term 9 replicating an entry
+        written in term 4 has to say so, or the follower rewrites history and
+        the consistency check on that index can never pass again.
+        """
+        payload = append_encode(9, 0, 0, 0, 1, 4, 20)
+        header = append_decode(payload)
+        self.assertEqual(header["term"], 9)
+        self.assertEqual(header["entry_term"], 4)
+
+    def test_the_count_shares_a_byte_with_the_index_without_corrupting_it(self):
+        """Those bits were taken from the index field to make room."""
+        for count in (0, 1):
+            for index in (0, 1, 30000, APPEND_INDEX_MAX):
+                with self.subTest(count=count, index=index):
+                    header = append_decode(
+                        append_encode(1, index, 1, index, count, 1, 20))
+                    self.assertEqual(header["prev_index"], index)
+                    self.assertEqual(header["commit"], index)
+                    self.assertEqual(header["count"], count)
 
     def test_log_size_fits_the_index_field(self):
-        # 16 bits of index must cover the configured log_size of 30000.
+        # Fifteen bits of index must still cover the configured log_size of
+        # 30000; the sixteenth now carries the entry count.
         from cluster_config import load
-        self.assertLessEqual(load(ROOT / "config" / "cluster.conf")["log_size"], 0xFFFF)
+        self.assertLessEqual(load(ROOT / "config" / "cluster.conf")["log_size"],
+                             APPEND_INDEX_MAX)
 
     def test_empty_append_is_all_zero_payload_in_term_zero(self):
         self.assertEqual(append_encode(0, 0, 0, 0), bytes(8))
@@ -289,7 +318,7 @@ class AgentTests(unittest.TestCase):
             header = append_decode(agent.append_payload())
             outcome, match = follower.accept(
                 1, header["term"], header["prev_index"], header["prev_term"],
-                header["count"], header["event"])
+                header["count"], header["entry_term"], header["event"])
             self.assertEqual(outcome, APPEND_ACCEPTED)
             agent.next_index[2] = match + 1
             agent.match_index[2] = match

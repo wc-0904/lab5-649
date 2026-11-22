@@ -62,7 +62,8 @@ def ref_decode(data):
     return clock, packed & REF_CYCLE_MAX, ((packed >> 14) & 3) + 1
 
 
-def append_encode(term, prev_index, prev_term, commit, count=0, event=0):
+def append_encode(term, prev_index, prev_term, commit, count=0, entry_term=0,
+                  event=0):
     """Encode an AppendEntries header; count zero is the empty heartbeat append.
 
     :param term: Leader term.
@@ -70,12 +71,22 @@ def append_encode(term, prev_index, prev_term, commit, count=0, event=0):
     :param prev_term: Term of that preceding entry.
     :param commit: Leader commit index.
     :param count: Entries carried, 0 or 1.
+    :param entry_term: Term the carried entry was created under. Not the same
+        as term once the log spans more than one; conflating them makes a
+        follower rewrite history and deadlocks the consistency check.
     :param event: Event type of the carried entry, when count is 1.
     :return: Eight bytes.
     """
-    return struct.pack("<BHBHBB", term & 0xFF, prev_index & 0xFFFF, prev_term & 0xFF,
-                       commit & 0xFFFF, count & 0xFF, event & 0xFF)
+    index = prev_index & APPEND_INDEX_MAX
+    # Bit 15 of the index field carries the count, which is 0 or 1.
+    packed = index | (0x8000 if count else 0)
+    return struct.pack("<BHBHBB", term & 0xFF, packed, prev_term & 0xFF,
+                       commit & APPEND_INDEX_MAX, entry_term & 0xFF, event & 0xFF)
 
+
+#: Largest log index the AppendEntries header can carry. Must match
+#: LAB5_APPEND_INDEX_MAX in include/lab_protocol.h.
+APPEND_INDEX_MAX = 0x7FFF
 
 #: Reply results, matching enum lab5_reply_result in include/lab_protocol.h.
 REPLY_COMMITTED = 0
@@ -212,9 +223,11 @@ def append_decode(data):
     :param data: Eight received bytes.
     :return: Mapping of the header fields.
     """
-    term, prev_index, prev_term, commit, count, event = struct.unpack("<BHBHBB", data)
-    return {"term": term, "prev_index": prev_index, "prev_term": prev_term,
-            "commit": commit, "count": count, "event": event}
+    term, packed, prev_term, commit, entry_term, event = struct.unpack("<BHBHBB", data)
+    return {"term": term, "prev_index": packed & APPEND_INDEX_MAX,
+            "prev_term": prev_term, "commit": commit & APPEND_INDEX_MAX,
+            "count": 1 if packed & 0x8000 else 0, "entry_term": entry_term,
+            "event": event}
 
 
 class Periodic:
@@ -482,7 +495,8 @@ class RaftAgent:
             self.last_contact = time.monotonic()
         result, match = self.log.accept(self.term, header["term"],
                                         header["prev_index"], header["prev_term"],
-                                        header["count"], header["event"])
+                                        header["count"], header["entry_term"],
+                                        header["event"])
         if result == APPEND_ACCEPTED:
             # Commit no further than what we actually hold.
             target = min(header["commit"], self.log.last_index())
@@ -620,9 +634,10 @@ class RaftAgent:
         prev_index = nxt - 1
         prev_term = self.log.term_at(prev_index) or 0
         entry = self.log.get(nxt)
-        count, event = (1, entry[1]) if entry else (0, 0)
+        # The entry's own term travels with it; it is not the leader's term.
+        count, entry_term, event = (1, entry[0], entry[1]) if entry else (0, 0, 0)
         return append_encode(self.term, prev_index, prev_term, self.commit_index,
-                             count, event)
+                             count, entry_term, event)
 
     def client_append(self, event):
         """Steps 1 and 2 of Figure 2: the client calls the leader, which appends.

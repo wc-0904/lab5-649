@@ -157,7 +157,8 @@ class RaftLog:
             return
         del self.entries[from_index - self.first:]
 
-    def accept(self, current_term, leader_term, prev_index, prev_term, count, event):
+    def accept(self, current_term, leader_term, prev_index, prev_term, count,
+               entry_term, event):
         """Apply the Raft AppendEntries consistency check.
 
         Re-sending the same entry is harmless, which matters because every frame
@@ -168,6 +169,8 @@ class RaftLog:
         :param prev_index: Index preceding the carried entry.
         :param prev_term: Term of that preceding entry.
         :param count: Entries carried, 0 or 1.
+        :param entry_term: Term the carried entry was created under, which is
+            not the leader's current term once the log spans more than one.
         :param event: Event of the carried entry, when count is 1.
         :return: (outcome, match index).
         """
@@ -187,10 +190,13 @@ class RaftLog:
             nxt = prev_index + 1
             existing = self.get(nxt)
             if existing is not None:
-                if existing == (leader_term, event):
+                if existing == (entry_term, event):
                     return APPEND_ACCEPTED, nxt
                 self.truncate(nxt)
-            self.append(leader_term, event)
+            # The entry's own term, not the leader's. Storing the leader's term
+            # rewrites history under a new leader and makes the next
+            # consistency check on this index fail for ever.
+            self.append(entry_term, event)
         return APPEND_ACCEPTED, prev_index + (1 if count else 0)
 
     def term_at(self, index):

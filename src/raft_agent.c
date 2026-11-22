@@ -529,6 +529,8 @@ void raft_append_tx(int64_t now_ms)
 			header.commit = (uint16_t)state.commit_index;
 			if (raft_log_get(&state.log, nxt, &entry)) {
 				header.count = 1;
+				/* The entry's own term travels with it. */
+				header.entry_term = entry.term;
 				header.event = entry.event;
 			}
 			state.last_append_ms = now_ms;
@@ -925,7 +927,7 @@ void raft_on_append(const uint8_t data[8])
 
 	result = raft_log_accept(&state.log, (uint8_t)state.term, header.term,
 				 header.prev_index, header.prev_term, header.count,
-				 header.event, &match);
+				 header.entry_term, header.event, &match);
 	stored = raft_log_last_index(&state.log);
 	grew = stored > before;
 	if (result == RAFT_APPEND_ACCEPTED) {

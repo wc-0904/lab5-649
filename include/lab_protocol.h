@@ -64,16 +64,28 @@ struct lab5_ref { uint64_t master_us; uint16_t cycle; int master; };
 #define LAB5_REF_CYCLE_MAX ((1U << LAB5_REF_CYCLE_BITS) - 1U)
 /** @brief Decoded AppendEntries header.
  *
- * Wire layout, little endian: byte 0 term, bytes 1..2 prevLogIndex, byte 3
- * prevLogTerm, bytes 4..5 leaderCommit, byte 6 entry count, byte 7 the event of
- * the single carried entry. Sixteen bits of index covers the configured
- * log_size of 30000. An entry's own index is prevLogIndex + 1 and its term is
- * the leader's term, so one entry needs only its event type on the wire, which
- * is how AppendEntries fits in eight bytes without fragmentation. count is zero
- * for the empty heartbeat append.
+ * Wire layout, little endian: byte 0 the leader's term, bytes 1..2 prevLogIndex
+ * in the low fifteen bits with the entry count in bit fifteen, byte 3
+ * prevLogTerm, bytes 4..5 leaderCommit in the low fifteen bits, byte 6 the
+ * **carried entry's own term**, byte 7 its event. Fifteen bits of index covers
+ * the configured log_size of 30000, and the count is one bit because an append
+ * carries at most one entry.
+ *
+ * The entry's term is not the leader's term and the two must not be conflated.
+ * This originally carried only the event and left a follower to stamp what it
+ * stored with the header's term, which is correct exactly as long as the
+ * cluster never changes term: an entry written under an earlier leader would be
+ * recorded under the current one, so the next consistency check on that index
+ * compares the leader's real prevLogTerm against the follower's rewritten one,
+ * fails, truncates, refills and fails again. On the bench that deadlocked both
+ * Nucleos into storing index 1 for ever and emptied the committed graph. One
+ * entry needs its own term on the wire; the bits came from the two index fields
+ * and the count, which were wider than they ever needed to be.
  */
 struct lab5_append { uint8_t term; uint16_t prev_index; uint8_t prev_term;
-	uint16_t commit; uint8_t count; uint8_t event; };
+	uint16_t commit; uint8_t count; uint8_t entry_term; uint8_t event; };
+/** @brief Largest log index the AppendEntries header can carry. */
+#define LAB5_APPEND_INDEX_MAX 0x7fffU
 /** @brief Zero point of the REF clock field: 2026-01-01T00:00:00Z in microseconds.
  *
  * The 48 bit field spans about 8.9 years from here, so it covers the course and

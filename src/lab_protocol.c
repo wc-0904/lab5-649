@@ -142,13 +142,17 @@ struct lab5_ref lab5_ref_decode(const uint8_t data[8])
  */
 void lab5_append_encode(uint8_t data[8], const struct lab5_append *header)
 {
+	uint16_t index = header->prev_index & LAB5_APPEND_INDEX_MAX;
+	uint16_t commit = header->commit & LAB5_APPEND_INDEX_MAX;
+
 	data[0] = header->term;
-	data[1] = (uint8_t)header->prev_index;
-	data[2] = (uint8_t)(header->prev_index >> 8);
+	data[1] = (uint8_t)index;
+	/* Bit 15 of the index field carries the entry count, which is 0 or 1. */
+	data[2] = (uint8_t)((index >> 8) | (header->count ? 0x80U : 0U));
 	data[3] = header->prev_term;
-	data[4] = (uint8_t)header->commit;
-	data[5] = (uint8_t)(header->commit >> 8);
-	data[6] = header->count;
+	data[4] = (uint8_t)commit;
+	data[5] = (uint8_t)(commit >> 8);
+	data[6] = header->entry_term;
 	data[7] = header->event;
 }
 
@@ -160,10 +164,14 @@ struct lab5_append lab5_append_decode(const uint8_t data[8])
 {
 	struct lab5_append header = {
 		.term = data[0],
-		.prev_index = (uint16_t)((uint16_t)data[1] | ((uint16_t)data[2] << 8)),
+		.prev_index = (uint16_t)(((uint16_t)data[1] |
+					  ((uint16_t)data[2] << 8)) &
+					 LAB5_APPEND_INDEX_MAX),
 		.prev_term = data[3],
-		.commit = (uint16_t)((uint16_t)data[4] | ((uint16_t)data[5] << 8)),
-		.count = data[6],
+		.commit = (uint16_t)(((uint16_t)data[4] | ((uint16_t)data[5] << 8)) &
+				     LAB5_APPEND_INDEX_MAX),
+		.count = (uint8_t)((data[2] >> 7) & 1U),
+		.entry_term = data[6],
 		.event = data[7],
 	};
 

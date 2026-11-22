@@ -176,7 +176,8 @@ void raft_log_truncate(struct raft_log *log, uint32_t from)
 enum raft_append_result raft_log_accept(struct raft_log *log, uint8_t current_term,
 					uint8_t leader_term, uint32_t prev_index,
 					uint8_t prev_term, uint8_t count,
-					uint8_t event, uint32_t *match_index)
+					uint8_t entry_term, uint8_t event,
+					uint32_t *match_index)
 {
 	uint8_t have;
 
@@ -206,14 +207,19 @@ enum raft_append_result raft_log_accept(struct raft_log *log, uint8_t current_te
 		struct raft_entry existing;
 
 		if (raft_log_get(log, next, &existing)) {
-			if (existing.term == leader_term && existing.event == event) {
+			if (existing.term == entry_term && existing.event == event) {
 				/* Already stored: a duplicate copy, not a conflict. */
 				*match_index = next;
 				return RAFT_APPEND_ACCEPTED;
 			}
 			raft_log_truncate(log, next);
 		}
-		raft_log_append(log, leader_term, event);
+		/*
+		 * The entry's own term, not the leader's. Storing the leader's
+		 * term here rewrites history under a new leader and makes the
+		 * next consistency check on this index fail for ever.
+		 */
+		raft_log_append(log, entry_term, event);
 	}
 	*match_index = prev_index + (count != 0 ? 1 : 0);
 	return RAFT_APPEND_ACCEPTED;

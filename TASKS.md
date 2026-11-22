@@ -969,6 +969,42 @@ Two causes, both of them things the C leader path was missing that the Pi's had:
   precisely when it most needed draining. Rate limited to one a second, like the
   reference gap report.
 
+**The real cause of the runaway was a protocol flaw, not a logic slip.**
+`struct lab5_append` carried the leader's term but **not the carried entry's own
+term**, so a follower had no choice but to stamp what it stored with the header
+term. That is correct exactly as long as the cluster never changes term, which
+was true of every test before P9. Once the log spans two terms it deadlocks:
+
+1. Leader's log is `[1:(164,X), 2:(165,steering)]`; `nextIndex` walks to 1.
+2. It sends `prev=0, count=1, event=X` with header term 165.
+3. The follower stores `(165, X)` at index 1 and acknowledges ACCEPTED.
+4. The leader advances to `nextIndex=2` and sends `prev=1, prev_term=164`.
+5. The follower holds term 165 there, so MISMATCH, and it truncates to empty.
+6. The leader backs off to `nextIndex=1`. Return to step 2, for ever.
+
+That is the `store idx=1` / `result=3` / `result=2` cycle seen on both Nucleos,
+and it emptied the committed graph cluster wide: the leader's commit line read
+`net nodes=... links=......` because every NODE and CANLINK entry had been
+truncated away.
+
+The payload is now `term`, `prev_index` in fifteen bits with the count in bit
+fifteen, `prev_term`, `commit` in fifteen bits, **`entry_term`**, `event`. The
+bits came from the two index fields and the count, which were wider than they
+ever needed to be: `log_size` is 30000 and an append carries at most one entry.
+`raft_log_accept()` stores and compares on the entry's term on both sides.
+
+Five tests pin it, including the loop itself, so the regression is recognisable
+rather than merely absent.
+
+**A pattern worth putting in the report.** Three bugs this session were the same
+shape: a rule that existed in `pi/demo/raft_agent.py` and not in
+`src/raft_agent.c`, because the STM32's leader path was written from scratch
+while the Pi's had been working for days. Duplicate client request suppression,
+a leader ignoring its own append, a leader ignoring its own REF. On this bus a
+node routinely hears itself, once per bus plus relayed copies, so every handler
+needs an explicit answer for that case, and two implementations of one protocol
+need the rule written twice or tested once against each other.
+
 Still to do in P10: the held events and replay-exactly-once behaviour of
 checkoff step 7, and `COCKPIT_OK`/`COCKPIT_ERROR`.
 
