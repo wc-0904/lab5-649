@@ -225,6 +225,29 @@ enum lab5_delay {
  */
 #define LAB5_ISOLATION_MS 30U
 
+/**
+ * @brief Silence from a peer, in ms, after which the leader records it down.
+ *
+ * The handout's event table has the leader append NODE_X_DOWN when node X goes
+ * down, and nothing else can: a node cut off from both buses cannot reach the
+ * leader to report itself. Any frame from the peer counts, heartbeat or
+ * consensus, so a node with a latched local failure, which stops heartbeating
+ * but still acknowledges appends at least every 200 ms, is not dropped. Must
+ * match PEER_DOWN in pi/demo/raft_agent.py.
+ */
+#define LAB5_PEER_DOWN_MS 500U
+
+/**
+ * @brief Silence on both buses, in ms, after which a node forgets its own
+ * reported state and re-reports itself on reconnection.
+ *
+ * Longer than LAB5_PEER_DOWN_MS, so by the time a cut-off node resets, the
+ * leader has already recorded it down; on reconnection it reports NODE_X_UP and
+ * then each link it can hear, exactly as at boot, instead of delivering a stale
+ * report it was holding. Must match ISOLATED_RESET in pi/demo/raft_agent.py.
+ */
+#define LAB5_ISOLATED_RESET_MS 600U
+
 #define LAB5_EPOCH_US 1767225600000000ULL
 /** @brief Decoded AppendEntries acknowledgement.
  *

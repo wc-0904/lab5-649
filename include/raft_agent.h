@@ -155,6 +155,23 @@ void raft_on_client_request(const uint8_t data[8], int from);
  * @param alive True when cockpit heartbeats are fresh.
  */
 void raft_report_cockpit(bool alive);
+/** @brief Note that a frame from a node was just received.
+ *
+ * Fed by heartbeats and by every consensus frame whose identifier names its
+ * sender, so a node with a latched local failure still counts as present.
+ * @param node Sending node ID.
+ * @param now_ms Receive time in milliseconds.
+ */
+void raft_heard_from(int node, int64_t now_ms);
+/** @brief Leader only: record a peer silent for LAB5_PEER_DOWN_MS as down.
+ *
+ * Appends NODE_X_DOWN once per silence, and only for a node the committed graph
+ * shows up. The node re-reports itself when it returns. The isolated node cannot
+ * report itself, so this is the only way the cluster learns of the isolation.
+ * @param now_ms Current uptime in milliseconds.
+ * @param hearing True when this node heard any frame within LAB5_ISOLATION_MS.
+ */
+void raft_peer_tick(int64_t now_ms, bool hearing);
 /** @brief Report whether any node is missing a link in the committed graph.
  *
  * When every node holds both links a relayed copy is redundant, because each

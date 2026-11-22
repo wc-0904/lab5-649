@@ -93,6 +93,15 @@ LINK_SILENCE = 0.100
 #: which checkoff step 10 forbids. Shorter than the 60 ms minimum election
 #: timeout. Must match LAB5_ISOLATION_MS in include/lab_protocol.h.
 ISOLATION_WINDOW = 0.030
+#: Silence from a peer after which the leader records it down, seconds. Any
+#: frame counts, so a node with a latched local failure, which stops
+#: heartbeating but still acknowledges appends, is not dropped. Must match
+#: LAB5_PEER_DOWN_MS in include/lab_protocol.h.
+PEER_DOWN = 0.500
+#: Silence on both buses after which a node forgets its own reported state and
+#: re-reports itself on reconnection, seconds. Longer than PEER_DOWN, so the
+#: leader has already recorded it down. Must match LAB5_ISOLATED_RESET_MS.
+ISOLATED_RESET = 0.600
 #: How long a change must hold before it is reported, seconds. Asymmetric for
 #: the same reason as the firmware's: a log entry is permanent, so coming up
 #: late is free while a false entry is not. The down bar sits above the longest
@@ -373,6 +382,13 @@ class RaftAgent:
         # Cockpit liveness, which only the leader records.
         self.cockpit_known = False
         self.cockpit_alive = False
+        # Peer liveness, tracked on every node so a newly elected leader
+        # already knows who has gone quiet; and whether NODE_X_DOWN is already
+        # in this leader's log for the current silence.
+        self.heard = {peer: time.monotonic() for peer in self.peers}
+        self.down_reported = {peer: False for peer in self.peers}
+        # True while this node hears nothing on either bus; it reports nothing.
+        self.isolated = False
         # Entries already shown. Everything the log held when this node started
         # following is marked replayed; what arrives afterwards is live.
         self.displayed = 0
@@ -791,6 +807,41 @@ class RaftAgent:
         self.cockpit_alive = alive
         self.client_append(COCKPIT_OK if alive else COCKPIT_ERROR)
 
+    def heard_from(self, node, now):
+        """Note that a frame from a node was just received.
+
+        :param node: Sending node ID.
+        :param now: Monotonic receive time.
+        """
+        if node in self.heard:
+            self.heard[node] = now
+            self.down_reported[node] = False
+
+    def peer_tick(self, now, hearing=True):
+        """Leader only: record a peer silent for PEER_DOWN as down.
+
+        The handout's event table has the leader append NODE_X_DOWN, and nothing
+        else can: a node cut off from both buses cannot reach the leader to
+        report itself. Once per silence, only for a node the committed graph
+        shows up; the node re-reports itself when it returns.
+
+        :param now: Monotonic time from the caller's loop.
+        :param hearing: False when this node hears nothing at all, in which case
+            it is the one cut off and must not record its peers down.
+        :return: Encoded event appended, or None.
+        """
+        if not self.is_leader() or not hearing:
+            return None
+        for peer in self.peers:
+            if (self.down_reported[peer] or now - self.heard[peer] < PEER_DOWN
+                    or not self.net.node_up(peer)):
+                continue
+            self.down_reported[peer] = True
+            event = event_node(peer, False)
+            self.client_append(event)
+            return event
+        return None
+
     def show_new_entries(self):
         """Print entries committed since the last call, exactly once, in order.
 
@@ -847,10 +898,30 @@ class RaftAgent:
         log entry is permanent, so coming up late is free while a false entry
         is not.
 
+        A node that hears nothing on either bus for ISOLATED_RESET is cut off:
+        the leader has recorded it down and dropNode took its links. It forgets
+        whatever it was holding and, on reconnection, reports itself and each
+        link it can hear exactly as at boot, rather than delivering a stale
+        report late.
+
         :param last_rx: Monotonic time of the last frame seen on each bus.
         :param now: Monotonic time from the caller's loop.
         :return: Encoded event to report, or None.
         """
+        self.isolated = all(now - t >= ISOLATED_RESET for t in last_rx)
+        if self.isolated:
+            reset = (self.pending_event is not None or self.link_event is not None
+                     or self.self_events != [event_node(self.node_id, True)]
+                     or not all(self.link_down))
+            self.self_events = [event_node(self.node_id, True)]
+            self.pending_event = None
+            self.link_event = None
+            self.link_down = [True, True]
+            self.link_candidate = [True, True]
+            self.link_changed = [now, now]
+            if reset and max(last_rx) > float("-inf") and self.config["Debug"]:
+                print("raft: isolated, will re-report on reconnection", flush=True)
+            return None
         for bus in (0, 1):
             down = now - last_rx[bus] >= LINK_SILENCE
             needed = LINK_DOWN_DEBOUNCE if down else LINK_UP_DEBOUNCE
@@ -873,6 +944,8 @@ class RaftAgent:
 
         :param now: Monotonic time from the caller's loop.
         """
+        if self.isolated:
+            return  # Nobody can hear a report while cut off.
         if self.pending_event is not None:
             if self.is_leader():
                 # Won the leadership with a request still outstanding. Record

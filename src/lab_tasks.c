@@ -336,18 +336,22 @@ static void dispatch_task(void *a, void *b, void *c)
 					continue;
 				}
 				if (id == lab5_id_for(LAB5_REQ_VOTE_BASE, node)) {
+					raft_heard_from(node, rx.time_ms);
 					raft_on_vote_request(rx.frame.data, node);
 					break;
 				}
 				if (id == lab5_id_for(LAB5_VOTE_BASE, node)) {
+					raft_heard_from(node, rx.time_ms);
 					raft_on_vote(rx.frame.data, node);
 					break;
 				}
 				if (id == lab5_id_for(LAB5_APPEND_ACK_BASE, node)) {
+					raft_heard_from(node, rx.time_ms);
 					raft_on_ack(rx.frame.data, node);
 					break;
 				}
 				if (id == lab5_id_for(LAB5_CLIENT_REQ_BASE, node)) {
+					raft_heard_from(node, rx.time_ms);
 					raft_on_client_request(rx.frame.data, node);
 					break;
 				}
@@ -376,6 +380,8 @@ static void dispatch_task(void *a, void *b, void *c)
 
 			state.seen[peer][rx.bus] = true;
 			k_spin_unlock(&state_lock, key);
+			/* After the unlock: the agent has its own lock, never nested. */
+			raft_heard_from(peer + 1, rx.time_ms);
 		}
 		if (duplicate(&rx)) {
 			atomic_inc(&duplicates);
@@ -831,6 +837,7 @@ static void monitor_task(void *a, void *b, void *c)
 				now - peek.heartbeat[0][bus] < LAB_TIMEOUT_MS;
 		}
 		raft_report_cockpit(cockpit);
+		raft_peer_tick(now, lab_can_heard_within(LAB5_ISOLATION_MS));
 		/*
 		 * The committed log is the cluster's agreed view, so failure
 		 * mode holds the vehicle in the error state even when this

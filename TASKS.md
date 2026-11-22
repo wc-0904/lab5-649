@@ -1477,6 +1477,19 @@ unchanged. An isolated leader is still replaced, once, by the two followers that
 can hear each other. The test button latches local failure, stops HB and relay
 as in Lab 3, and leaves Raft running, so it does not change the term.
 
+**Isolated nodes were invisible to the rest of the cluster.** With N3 pulled off
+both buses, the Pi and N2 kept showing it alive with its links up for the whole
+isolation, and the report N3 was holding landed late on reconnection (a flash of
+`..` then `1.`). The handout's event table has the leader append `NODE_X_DOWN`
+when a node goes down, and nothing did. Now the leader appends `NODE_X_DOWN` once
+when it has heard no frame of any kind from X for `LAB5_PEER_DOWN_MS` (500 ms);
+acknowledgements count, so a latched local failure is not dropped. A node that
+hears nothing for `LAB5_ISOLATED_RESET_MS` (600 ms) drops what it was holding,
+reports nothing while cut off, and on reconnection reports `NODE_X_UP` and then
+each link it hears, as at boot. Both triggers are local silence timers, not a
+comparison against the committed graph, which is what flooded the log in the
+reverted self-healing attempt. Not yet on hardware.
+
 ### P13. Integration and demo rehearsal
 
 With the schedule covered there is room to do this properly rather than discover it in

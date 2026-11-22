@@ -151,6 +151,13 @@ static struct {
 	 * is made until it lands.
 	 */
 	uint32_t self_index;
+	/*
+	 * Peer liveness, tracked on every node so a newly elected leader already
+	 * knows who has gone quiet. Indexed by node ID.
+	 */
+	int64_t heard_ms[LAB5_CFG_N + 1];
+	/* True once NODE_X_DOWN is in this leader's log for the current silence. */
+	bool down_reported[LAB5_CFG_N + 1];
 } state;
 static struct k_spinlock state_lock;
 
@@ -168,6 +175,8 @@ void raft_agent_init(void)
 		state.next_index[node] = 1;
 		state.match_index[node] = 0;
 		state.client_answered[node] = false;
+		state.heard_ms[node] = k_uptime_get();
+		state.down_reported[node] = false;
 	}
 	raft_log_init(&state.log);
 	network_reset(&state.net);
@@ -580,6 +589,51 @@ void raft_report_cockpit(bool alive)
 		event = alive ? RAFT_COCKPIT_OK : RAFT_COCKPIT_ERROR;
 		index = raft_log_append(&state.log, (uint8_t)state.term, event);
 		state.match_index[LAB_NODE_ID] = raft_log_last_index(&state.log);
+	}
+	k_spin_unlock(&state_lock, key);
+
+	if (event != RAFT_EVENT_NONE && LAB5_CFG_DEBUG) {
+		printk("raft: append idx=%u term=%u %s\n", index, raft_term(),
+		       raft_event_name(event));
+	}
+}
+
+void raft_heard_from(int node, int64_t now_ms)
+{
+	if (node < 1 || node > LAB5_CFG_N) {
+		return;
+	}
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+
+	state.heard_ms[node] = now_ms;
+	state.down_reported[node] = false;
+	k_spin_unlock(&state_lock, key);
+}
+
+void raft_peer_tick(int64_t now_ms, bool hearing)
+{
+	uint8_t event = RAFT_EVENT_NONE;
+	uint32_t index = 0;
+
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+
+	/*
+	 * A leader that hears nothing at all is the one cut off, not its peers;
+	 * recording them down would only write entries it can never commit.
+	 */
+	if (state.role == RAFT_LEADER && hearing) {
+		for (int node = 1; node <= LAB5_CFG_N; node++) {
+			if (node == LAB_NODE_ID || state.down_reported[node] ||
+			    now_ms - state.heard_ms[node] < (int64_t)LAB5_PEER_DOWN_MS ||
+			    !network_node_up(&state.net, node)) {
+				continue;
+			}
+			state.down_reported[node] = true;
+			event = raft_event_node(node, false);
+			index = raft_log_append(&state.log, (uint8_t)state.term, event);
+			state.match_index[LAB_NODE_ID] = raft_log_last_index(&state.log);
+			break;
+		}
 	}
 	k_spin_unlock(&state_lock, key);
 
@@ -1227,7 +1281,37 @@ void raft_client_poll(int64_t now_ms)
 	int reported_bus = -1;
 	bool reported_down = false;
 
+	bool isolated = !lab_can_heard_within(LAB5_ISOLATED_RESET_MS);
+
 	k_spinlock_key_t key = k_spin_lock(&state_lock);
+
+	if (isolated) {
+		bool reset = state.self_reported ||
+			     state.pending_event != RAFT_EVENT_NONE ||
+			     !state.link_down[0] || !state.link_down[1];
+
+		/*
+		 * Cut off from both buses long enough that the leader has recorded
+		 * this node down, and dropNode took its links with it. Anything
+		 * held for the leader is stale: forget it, and re-report this node
+		 * and each link it can hear on reconnection, exactly as at boot.
+		 * Without this a held report landed late on reconnection, and the
+		 * other nodes never saw the isolation at all.
+		 */
+		state.self_reported = false;
+		state.pending_event = RAFT_EVENT_NONE;
+		for (int bus = 0; bus < 2; bus++) {
+			state.link_down[bus] = true;
+			state.link_candidate[bus] = true;
+			state.link_changed_ms[bus] = now_ms;
+		}
+		/* Nobody can hear a report while cut off: queue nothing. */
+		k_spin_unlock(&state_lock, key);
+		if (reset && LAB5_CFG_DEBUG) {
+			printk("raft: isolated, will re-report on reconnection\n");
+		}
+		return;
+	}
 
 	/*
 	 * This node's own existence, reported before its links. D15 says the

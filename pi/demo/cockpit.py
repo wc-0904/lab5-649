@@ -218,17 +218,21 @@ class Cockpit:
             if node == self.agent.node_id:
                 continue
             if can_id == lab5_id_for(REQ_VOTE_BASE, node):
+                self.agent.heard_from(node, now)
                 self.send_lab5(*self.agent.on_vote_request(node, data))
                 return
             if can_id == lab5_id_for(VOTE_BASE, node):
+                self.agent.heard_from(node, now)
                 if self.agent.on_vote(node, data):
                     self.show_raft_state()
                 return
             if can_id == lab5_id_for(APPEND_ACK_BASE, node):
+                self.agent.heard_from(node, now)
                 if self.agent.on_ack(node, data):
                     self.show_raft_state()
                 return
             if can_id == lab5_id_for(CLIENT_REQ_BASE, node):
+                self.agent.heard_from(node, now)
                 reply = self.agent.on_client_request(node, data)
                 if reply is not None:
                     self.send_lab5(*reply)
@@ -386,6 +390,7 @@ class Cockpit:
         if can_id in (HB2, HB3):
             peer = can_id - HB1 + 1
             self.heartbeat[can_id - HB1][bus] = now
+            self.agent.heard_from(peer, now)
             if peer not in self.seen_nodes:
                 # First sight of a peer: record it so the graph is not empty.
                 self.seen_nodes.add(peer)
@@ -508,6 +513,7 @@ class Cockpit:
                 # always yes; the other direction is recorded by whoever
                 # replaces it.
                 self.agent.report_cockpit(True)
+                self.agent.peer_tick(now, hearing)
                 self.agent.ref_tx(now)
                 self.agent.append_tx(now)
                 if now >= next_drift:
