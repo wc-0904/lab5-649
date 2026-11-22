@@ -22,8 +22,12 @@ sys.path.insert(0, str(ROOT / "pi" / "demo"))
 
 from protocol import (APPEND, APPEND_ACK_BASE, CLIENT_REQ_BASE,  # noqa: E402
                       LAB5_FILTER_ID, LAB5_FILTER_MASK, LAB5_RELAY_FLAG, REF,
+                      LAB5_RELAY_NODE_MASK, LAB5_RELAY_NODE_SHIFT,
                       REQ_VOTE_BASE, VOTE_BASE, is_consensus, is_relayed,
-                      lab5_id_for, origin_id, relay_id)
+                      lab5_id_for, origin_id, relay_id, relay_node)
+
+#: Nodes that may relay a frame.
+RELAYERS = (1, 2, 3)
 
 #: Every Lab 5 identifier a node may have to relay.
 LAB5_IDS = [REF, APPEND] + [lab5_id_for(base, node)
@@ -48,7 +52,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	id = (uint32_t)strtoul(argv[1], NULL, 0);
-	printf("%u %u %d\n", lab5_relay_id(id), lab5_origin_id(id),
+	printf("%u %u %d\n", lab5_relay_id(id, 2), lab5_origin_id(id),
 	       lab5_is_relayed(id) ? 1 : 0);
 	return 0;
 }
@@ -59,21 +63,39 @@ class RelayIdentifierTests(unittest.TestCase):
     def test_the_flag_round_trips(self):
         """Setting then clearing the flag returns the original identifier."""
         for can_id in LAB5_IDS:
+            for node in RELAYERS:
+                with self.subTest(can_id=hex(can_id), node=node):
+                    self.assertFalse(is_relayed(can_id))
+                    self.assertTrue(is_relayed(relay_id(can_id, node)))
+                    self.assertEqual(origin_id(relay_id(can_id, node)), can_id)
+                    self.assertEqual(relay_node(relay_id(can_id, node)), node)
+
+    def test_two_relayers_never_share_an_identifier(self):
+        """The bug this exists for.
+
+        CAN arbitrates on the identifier alone, so two frames sharing an ID
+        and differing in the data field leave the node sending recessive while
+        reading dominant with a bit error. Two nodes can hold both links at
+        once and relay different frames at the same moment, so their copies
+        must be distinguishable or they collide destructively.
+        """
+        for can_id in LAB5_IDS:
+            ids = {relay_id(can_id, node) for node in RELAYERS}
             with self.subTest(can_id=hex(can_id)):
-                self.assertFalse(is_relayed(can_id))
-                self.assertTrue(is_relayed(relay_id(can_id)))
-                self.assertEqual(origin_id(relay_id(can_id)), can_id)
+                self.assertEqual(len(ids), len(RELAYERS))
 
     def test_a_relayed_copy_loses_arbitration_to_an_original(self):
         """It is a second chance at something and must not delay live traffic."""
         for can_id in LAB5_IDS:
-            with self.subTest(can_id=hex(can_id)):
-                # Lower identifier wins on CAN, so the copy must be higher.
-                self.assertGreater(relay_id(can_id), can_id)
+            for node in RELAYERS:
+                with self.subTest(can_id=hex(can_id), node=node):
+                    # Lower identifier wins on CAN, so the copy must be higher.
+                    self.assertGreater(relay_id(can_id, node), can_id)
 
     def test_relayed_identifiers_do_not_collide_with_the_lab3_catalog(self):
         """Lab 3 tops out at 0x300, which is why 0x400 was free to take."""
-        relayed = {relay_id(can_id) for can_id in LAB5_IDS}
+        relayed = {relay_id(can_id, node)
+                   for can_id in LAB5_IDS for node in RELAYERS}
         self.assertEqual(relayed & set(LAB3_IDS), set())
         for can_id in LAB3_IDS:
             self.assertFalse(is_relayed(can_id))
@@ -81,30 +103,32 @@ class RelayIdentifierTests(unittest.TestCase):
     def test_relayed_identifiers_stay_inside_eleven_bits(self):
         """A standard CAN identifier, so no frame silently becomes extended."""
         for can_id in LAB5_IDS:
-            with self.subTest(can_id=hex(can_id)):
-                self.assertLessEqual(relay_id(can_id), 0x7FF)
+            for node in RELAYERS:
+                with self.subTest(can_id=hex(can_id), node=node):
+                    self.assertLessEqual(relay_id(can_id, node), 0x7FF)
 
     def test_a_relayed_consensus_frame_is_not_mistaken_for_an_original(self):
         """The dispatcher strips the flag first; the raw range must not match."""
         for can_id in LAB5_IDS:
             if not is_consensus(can_id):
                 continue
-            with self.subTest(can_id=hex(can_id)):
-                self.assertFalse(is_consensus(relay_id(can_id)))
-                self.assertTrue(is_consensus(origin_id(relay_id(can_id))))
+            for node in RELAYERS:
+                with self.subTest(can_id=hex(can_id), node=node):
+                    self.assertTrue(is_consensus(origin_id(
+                        relay_id(can_id, node))))
 
     def test_the_consensus_mask_already_separates_the_two_ranges(self):
         """The relay flag sits inside the existing mask, so it needs no widening."""
         self.assertEqual(LAB5_RELAY_FLAG & LAB5_FILTER_MASK, LAB5_RELAY_FLAG)
         self.assertNotEqual(LAB5_FILTER_ID | LAB5_RELAY_FLAG, LAB5_FILTER_ID)
 
-    def test_relaying_twice_is_the_same_as_once(self):
-        """One hop is enforced by refusing to relay a flagged frame at all,
-        but the identifier arithmetic must be idempotent regardless.
-        """
+    def test_one_filter_covers_every_relayer(self):
+        """Matching on the flag alone, so a relayer needs no filter of its own."""
         for can_id in LAB5_IDS:
-            with self.subTest(can_id=hex(can_id)):
-                self.assertEqual(relay_id(relay_id(can_id)), relay_id(can_id))
+            for node in RELAYERS:
+                with self.subTest(can_id=hex(can_id), node=node):
+                    self.assertEqual(relay_id(can_id, node) & LAB5_RELAY_FLAG,
+                                     LAB5_RELAY_FLAG)
 
 
 @unittest.skipIf(shutil.which("gcc") is None, "needs gcc to build the C reference")
@@ -134,12 +158,12 @@ class FirmwareAgreementTests(unittest.TestCase):
 
     def test_the_firmware_agrees_on_every_identifier(self):
         """A disagreement would make one endpoint relay into the other's blind spot."""
-        for can_id in LAB5_IDS + [relay_id(i) for i in LAB5_IDS]:
+        for can_id in LAB5_IDS + [relay_id(i, 3) for i in LAB5_IDS]:
             with self.subTest(can_id=hex(can_id)):
                 result = subprocess.run([str(self.binary), str(can_id)],
                                         capture_output=True, text=True, check=True)
                 relayed, origin, flagged = (int(v) for v in result.stdout.split())
-                self.assertEqual(relayed, relay_id(can_id))
+                self.assertEqual(relayed, relay_id(can_id, 2))
                 self.assertEqual(origin, origin_id(can_id))
                 self.assertEqual(bool(flagged), is_relayed(can_id))
 

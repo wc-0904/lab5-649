@@ -1226,6 +1226,26 @@ traffic. Lab 3's catalog tops out at 0x300, so the range was free. The existing
 consensus mask 0x7e0 already covers bit ten, so the two ranges separate with no
 mask change: originals match `(0x040, 0x7e0)`, copies match `(0x440, 0x7e0)`.
 
+**The relayer's ID is in the identifier too, and that was not optional.**
+Two nodes can hold both links at once, and then both relay. Under one shared
+identifier their copies collide destructively: CAN arbitrates on the identifier
+alone, so two frames sharing an ID and differing in the data field leave the
+node sending recessive while reading dominant with a bit error, and the
+transmit counter rises by eight for both. Their queues are offset by a few
+hundred microseconds, so they relay different frames at the same moment
+routinely.
+
+The bench made this visible only once the cockpit came off bus B. From then on
+a frame originating on bus A was relayed onto B by **both** Nucleos, while a
+frame originating on B had only one relayer left for A. Errors appeared on bus
+B and never on A, with the transmit counter reaching 128 and the receive
+counter staying at zero: the signature of a node losing a bit contest during
+its own transmission rather than seeing a corrupted bus.
+
+Carrying the relayer in bits 9 and 8 makes the two copies arbitrate normally:
+one wins, the other defers and retries. It also simplifies the filtering, since
+matching on the flag alone covers every relayer.
+
 **One hop is enforced structurally**: a node never relays a frame that already
 carries the flag. With three nodes one hop always suffices, so nothing is lost,
 and no loop is possible regardless of topology.

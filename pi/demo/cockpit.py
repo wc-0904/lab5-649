@@ -41,10 +41,10 @@ def catalog_filters():
     exact = [(can_id, 0xC00007FF) for can_id in CATALOG]
     exact.append((REF, 0xC00007FF))
     exact.append((LAB5_FILTER_ID, 0xC0000000 | LAB5_FILTER_MASK))
-    # The same two again as relayed copies, which carry the relay flag.
-    exact.append((REF | LAB5_RELAY_FLAG, 0xC00007FF))
-    exact.append((LAB5_FILTER_ID | LAB5_RELAY_FLAG,
-                  0xC0000000 | LAB5_FILTER_MASK | LAB5_RELAY_FLAG))
+    # Every relayed copy, from any relayer. The relayer's ID sits in the
+    # identifier so two of them arbitrate rather than colliding, which means
+    # one filter covers the whole range instead of one per relayer.
+    exact.append((LAB5_RELAY_FLAG, 0xC0000000 | LAB5_RELAY_FLAG))
     return b"".join(struct.pack("=II", can_id, mask) for can_id, mask in exact)
 
 
@@ -363,7 +363,7 @@ class Cockpit:
             # routing table, so there is no convergence window for traffic to
             # fall into; see TASKS.md D25.
             if not is_relayed(can_id) and not self.local_fail:
-                self.forward(relay_id(base_id), data, bus)
+                self.forward(relay_id(base_id, self.agent.node_id), data, bus)
             # Lab 5 traffic: valid() covers the Lab 3 catalog only, so these
             # would otherwise be counted as malformed. The counter is read here
             # rather than inside receive_lab5 so the sync instant is as close to

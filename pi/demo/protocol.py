@@ -41,6 +41,9 @@ def lab5_id_for(base, node):
 #: sorts below every original in arbitration: it is a second chance at
 #: something and must never delay first-hand traffic.
 LAB5_RELAY_FLAG = 0x400
+#: Shift and mask of the relaying node within a relayed identifier.
+LAB5_RELAY_NODE_SHIFT = 8
+LAB5_RELAY_NODE_MASK = 0x3
 
 
 def is_relayed(can_id):
@@ -52,22 +55,42 @@ def is_relayed(can_id):
     return bool(can_id & LAB5_RELAY_FLAG)
 
 
-def relay_id(can_id):
+def relay_id(can_id, node):
     """Identifier a relayed copy travels under.
 
+    The relaying node is carried in the identifier because two nodes can hold
+    both links at once and then both relay. Under one shared identifier their
+    copies collide destructively: CAN arbitrates on the identifier alone, so
+    two frames sharing an ID and differing in the data field leave the node
+    sending recessive while reading dominant with a bit error. Carrying the
+    relayer makes them arbitrate instead, so one wins and the other retries.
+
     :param can_id: Original identifier.
-    :return: Identifier with the relay flag set.
+    :param node: Node ID doing the relaying.
+    :return: Identifier carrying the relay flag and the relayer.
     """
-    return can_id | LAB5_RELAY_FLAG
+    return (LAB5_RELAY_FLAG
+            | (((node - 1) & LAB5_RELAY_NODE_MASK) << LAB5_RELAY_NODE_SHIFT)
+            | can_id)
 
 
 def origin_id(can_id):
     """Original identifier of a possibly relayed frame.
 
     :param can_id: CAN identifier as received.
-    :return: Identifier with the relay flag cleared.
+    :return: Identifier with the relay flag and relayer cleared.
     """
-    return can_id & ~LAB5_RELAY_FLAG
+    return can_id & ~(LAB5_RELAY_FLAG
+                      | (LAB5_RELAY_NODE_MASK << LAB5_RELAY_NODE_SHIFT))
+
+
+def relay_node(can_id):
+    """Node that relayed a frame.
+
+    :param can_id: CAN identifier as received.
+    :return: Relaying node ID, meaningless when the frame is not relayed.
+    """
+    return ((can_id >> LAB5_RELAY_NODE_SHIFT) & LAB5_RELAY_NODE_MASK) + 1
 
 
 def is_consensus(can_id):

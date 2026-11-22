@@ -50,6 +50,29 @@ enum lab5_filter { LAB5_FILTER_ID = 0x040, LAB5_FILTER_MASK = 0x7e0 };
  * suffices (TASKS.md D24).
  */
 #define LAB5_RELAY_FLAG 0x400U
+/** @brief Shift of the relaying node's ID within a relayed identifier.
+ *
+ * Two nodes can hold both links at once, and then both relay. If every copy
+ * travelled under one shared identifier they would collide destructively: CAN
+ * arbitrates on the identifier alone, so two frames sharing an ID and
+ * differing in the data field leave the node sending recessive while reading
+ * dominant with a bit error, and the transmit counter rises by eight for both.
+ * Their queues are offset by a few hundred microseconds, so they relay
+ * different frames at the same moment routinely.
+ *
+ * On the bench this appeared the moment the cockpit came off bus B: a frame
+ * originating on bus A was then relayed onto B by **both** Nucleos, while a
+ * frame originating on B had only one relayer left for A. Errors appeared on
+ * bus B and never on A, with the transmit counter reaching 128 and the receive
+ * counter staying at zero, which is the signature of a node losing a bit
+ * contest during its own transmission.
+ *
+ * Carrying the relayer in the identifier makes the two copies arbitrate
+ * normally instead: one wins, the other defers and retries.
+ */
+#define LAB5_RELAY_NODE_SHIFT 8U
+/** @brief Mask of the relaying node's ID within a relayed identifier. */
+#define LAB5_RELAY_NODE_MASK 0x3U
 /** @brief Report whether a frame is a relayed copy.
  * @param id CAN identifier as received.
  * @return True when the relay flag is set.
@@ -60,19 +83,31 @@ static inline bool lab5_is_relayed(uint32_t id)
 }
 /** @brief Identifier a relayed copy of a frame travels under.
  * @param id Original identifier.
- * @return Identifier with the relay flag set.
+ * @param node Node ID doing the relaying.
+ * @return Identifier carrying the relay flag and the relayer.
  */
-static inline uint32_t lab5_relay_id(uint32_t id)
+static inline uint32_t lab5_relay_id(uint32_t id, int node)
 {
-	return id | LAB5_RELAY_FLAG;
+	return LAB5_RELAY_FLAG |
+		((uint32_t)((node - 1) & LAB5_RELAY_NODE_MASK) <<
+		 LAB5_RELAY_NODE_SHIFT) | id;
 }
 /** @brief Original identifier of a possibly relayed frame.
  * @param id CAN identifier as received.
- * @return Identifier with the relay flag cleared.
+ * @return Identifier with the relay flag and relayer cleared.
  */
 static inline uint32_t lab5_origin_id(uint32_t id)
 {
-	return id & ~LAB5_RELAY_FLAG;
+	return id & ~(LAB5_RELAY_FLAG |
+		      ((uint32_t)LAB5_RELAY_NODE_MASK << LAB5_RELAY_NODE_SHIFT));
+}
+/** @brief Node that relayed a frame.
+ * @param id CAN identifier as received.
+ * @return Relaying node ID, meaningless when the frame is not relayed.
+ */
+static inline int lab5_relay_node(uint32_t id)
+{
+	return (int)((id >> LAB5_RELAY_NODE_SHIFT) & LAB5_RELAY_NODE_MASK) + 1;
 }
 /** @brief Decoded REF payload: the master's clock, cycle counter and identity.
  *

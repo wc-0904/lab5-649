@@ -225,10 +225,13 @@ int lab_can_init(void)
 	static const struct can_filter lab5_filters[] = {
 		{.id = LAB5_REF, .mask = CAN_STD_ID_MASK},
 		{.id = LAB5_FILTER_ID, .mask = LAB5_FILTER_MASK},
-		/* The same two, as relayed copies. */
-		{.id = LAB5_REF | LAB5_RELAY_FLAG, .mask = CAN_STD_ID_MASK},
-		{.id = LAB5_FILTER_ID | LAB5_RELAY_FLAG,
-		 .mask = LAB5_FILTER_MASK | LAB5_RELAY_FLAG},
+		/*
+		 * Every relayed copy, from any relayer. The relayer's ID sits
+		 * in the identifier so two of them arbitrate rather than
+		 * colliding, which means one filter covers the whole range
+		 * instead of one per relayer.
+		 */
+		{.id = LAB5_RELAY_FLAG, .mask = LAB5_RELAY_FLAG},
 	};
 
 	for (int i = 0; i < 2; i++) {

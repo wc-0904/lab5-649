@@ -222,7 +222,7 @@ static void relay_lab5(const struct lab_rx *rx, uint32_t id)
 		return;
 	}
 	copy = *rx;
-	copy.frame.id = lab5_relay_id(id);
+	copy.frame.id = lab5_relay_id(id, LAB_NODE_ID);
 	if (k_msgq_put(&relay_queue, &copy, K_NO_WAIT) != 0) {
 		atomic_inc(&duplicates);
 	}
