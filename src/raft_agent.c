@@ -669,6 +669,10 @@ void raft_on_vote_request(const uint8_t data[8], int from)
 	struct lab5_vote vote = {0};
 	uint8_t out[8];
 	bool current;
+	bool stale;
+	bool taken;
+	int already;
+	uint32_t my_term;
 
 	k_spinlock_key_t key = k_spin_lock(&state_lock);
 
@@ -676,10 +680,13 @@ void raft_on_vote_request(const uint8_t data[8], int from)
 		adopt_term(request.term);
 	}
 	current = log_is_current(request.last_index, request.last_term);
+	stale = request.term < state.term;
+	taken = state.voted_for != 0 && state.voted_for != from;
+	already = state.voted_for;
+	my_term = state.term;
 	vote.term = (uint8_t)state.term;
 	vote.candidate = (uint8_t)from;
-	vote.granted = request.term >= state.term && current &&
-		(state.voted_for == 0 || state.voted_for == from);
+	vote.granted = !stale && current && !taken;
 	if (vote.granted) {
 		state.voted_for = from;
 		/*
@@ -694,9 +701,20 @@ void raft_on_vote_request(const uint8_t data[8], int from)
 	lab5_vote_encode(out, &vote);
 	lab_can_send_lab5(lab5_id_for(LAB5_VOTE_BASE, LAB_NODE_ID), out);
 	if (LAB5_CFG_DEBUG) {
-		printk("raft: vote %s for %s term=%u\n",
+		/*
+		 * Say why a vote was refused. A term that climbs without anyone
+		 * winning looks identical from the outside whether the cause is
+		 * a split vote, a stale candidate or a log that is behind, and
+		 * those want three different fixes.
+		 */
+		printk("raft: vote %s for %s term=%u mine=%u%s%s%s\n",
 		       vote.granted ? "granted" : "refused", lab_node_name(from),
-		       request.term);
+		       request.term, my_term, stale ? " stale" : "",
+		       !current ? " log-behind" : "",
+		       taken ? " already-voted" : "");
+		if (taken) {
+			printk("raft:   held by %s\n", lab_node_name(already));
+		}
 	}
 }
 
