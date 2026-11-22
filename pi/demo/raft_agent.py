@@ -736,6 +736,25 @@ class RaftAgent:
                   % (index, self.term, event_name(event)), flush=True)
         return index
 
+    def relay_needed(self):
+        """Report whether any node is missing a link in the committed graph.
+
+        When every node holds both links a relayed copy is provably redundant:
+        each frame is already transmitted on both buses by its originator, so
+        the copy reaches nobody new and only consumes bus and transmit queue
+        capacity. On the bench that waste pushed Lab 3's CTRL out of the
+        queues, and the node that stopped receiving it sat in the error state
+        flashing hazards while consensus reported everything healthy.
+
+        :return: True when relaying is worth doing.
+        """
+        for node in range(1, self.config["N"] + 1):
+            if not self.net.node_up(node):
+                continue
+            if not all(self.net.link_up(node, bus) for bus in (1, 2)):
+                return True
+        return False
+
     def report_cockpit(self, alive):
         """Record whether the cockpit is heartbeating. Leader only.
 

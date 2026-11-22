@@ -148,6 +148,13 @@ void raft_on_client_request(const uint8_t data[8], int from);
  * @param alive True when cockpit heartbeats are fresh.
  */
 void raft_report_cockpit(bool alive);
+/** @brief Report whether any node is missing a link in the committed graph.
+ *
+ * When every node holds both links a relayed copy is redundant, because each
+ * frame is already transmitted on both buses by its originator.
+ * @return True when relaying is worth doing.
+ */
+bool raft_relay_needed(void);
 /** @brief Report whether the committed log puts the vehicle in failure mode.
  * @return True when the cockpit is recorded as down.
  */

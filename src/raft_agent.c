@@ -580,6 +580,42 @@ void raft_report_cockpit(bool alive)
 	}
 }
 
+/** @brief Report whether any node is missing a link in the committed graph.
+ *
+ * When every node holds both links, a relayed copy is provably redundant:
+ * each frame is already transmitted on both buses by its originator, so the
+ * copy reaches nobody new and only consumes bus and transmit queue capacity.
+ * On the bench that waste pushed Lab 3's CTRL out of the transmit queues, and
+ * the node that stopped receiving it sat in the error state flashing hazards
+ * while the consensus layer reported everything healthy.
+ *
+ * The cost is the convergence window handout section 5.2 describes: relaying
+ * only begins once a link failure is committed, which takes about a second.
+ * Until then the node that lost a link is reachable only on its remaining bus,
+ * which is also the bus it will use to report the failure, so the report
+ * itself is never the thing that cannot get through.
+ * @return True when some node has a link down and relaying is worth doing.
+ */
+bool raft_relay_needed(void)
+{
+	k_spinlock_key_t key = k_spin_lock(&state_lock);
+	bool needed = false;
+
+	for (int node = 1; node <= LAB5_CFG_N && !needed; node++) {
+		if (!network_node_up(&state.net, node)) {
+			continue;
+		}
+		for (int bus = 1; bus <= 2; bus++) {
+			if (!network_link_up(&state.net, node, bus)) {
+				needed = true;
+				break;
+			}
+		}
+	}
+	k_spin_unlock(&state_lock, key);
+	return needed;
+}
+
 /** @brief Report whether the committed log puts the vehicle in failure mode.
  * @return True when the cockpit is recorded as down.
  */

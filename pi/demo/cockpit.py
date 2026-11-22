@@ -362,7 +362,11 @@ class Cockpit:
             # holding both links bridges reflexively rather than consulting its
             # routing table, so there is no convergence window for traffic to
             # fall into; see TASKS.md D25.
-            if not is_relayed(can_id) and not self.local_fail:
+            # Only while some node is missing a link: with every link up the
+            # originator has already put the frame on both buses, so a copy
+            # reaches nobody new and only consumes capacity.
+            if (not is_relayed(can_id) and not self.local_fail
+                    and self.agent.relay_needed()):
                 self.forward(relay_id(base_id, self.agent.node_id), data, bus)
             # Lab 5 traffic: valid() covers the Lab 3 catalog only, so these
             # would otherwise be counted as malformed. The counter is read here

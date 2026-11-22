@@ -236,6 +236,16 @@ static void relay_lab5(const struct lab_rx *rx, uint32_t id)
 	if (!lab_can_link_healthy(0) || !lab_can_link_healthy(1)) {
 		return;
 	}
+	/*
+	 * Nothing to bridge while every node holds both links: the originator
+	 * already put the frame on both buses, so a copy reaches nobody new and
+	 * only consumes bus and transmit queue capacity. On the bench that
+	 * waste pushed Lab 3's CTRL out of the queues and left a node in the
+	 * error state while consensus reported everything healthy.
+	 */
+	if (!raft_relay_needed()) {
+		return;
+	}
 	copy = *rx;
 	copy.frame.id = lab5_relay_id(id, LAB_NODE_ID);
 	if (k_msgq_put(&relay_queue, &copy, K_NO_WAIT) != 0) {
