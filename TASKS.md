@@ -1205,7 +1205,7 @@ needed.
 | 10.2 | Error state within 100 ms, motor braked, from **D27** | `lab_tasks.c` | Cold start with the proxy stopped shows all three nodes in error, hazards in step |
 | 10.3 | Held events while the cockpit is down, from **D26** | leader, `cockpit.py` | On return they appear exactly once, in order, marked replayed, then live events |
 
-### P11. Relay and the multi-link convergence window, checkoff steps 5 and 9  [11.1 and 11.2 verified on hardware; 11.3's relay delay fix WRITTEN, awaiting re-measurement]
+### P11. Relay and the multi-link convergence window, checkoff steps 5 and 9  [step 5 VERIFIED on hardware; step 9 (STM32 master) not yet run]
 
 **The scenario, and why it could not work before.** Checkoff step 5 pulls the
 cockpit off one bus and the drivetrain off the other, so those two cannot hear
@@ -1417,7 +1417,8 @@ MCP2515 through configuration mode, which clears TEC and REC. On a dead branch
 the counter saws 0 to 128 to 0 every heartbeat and reads healthy for most of
 each 20 ms cycle, so the result depended on the beat between the heartbeat and
 the link poll. Fixed by using receive silence (no frame for 100 ms), the signal
-the Pi already used, in `lab_can_link_healthy()`. Not yet on hardware.
+the Pi already used, in `lab_can_link_healthy()`. Verified on hardware: one
+entry per pull, no flapping over 60 s.
 
 **11.3 measured, and it failed, and here is why and the fix.** With the Pi off
 bus B and N3 off bus A (the exact two-link-pulled topology step 5 builds), the
@@ -1448,9 +1449,11 @@ in series: master transmit, then relay transmit. Four tests pin the
 composition, including that switching from direct to relayed mid stream is
 compensated on the very next reference.
 
-Not yet re-measured on hardware. The fix is reasoned from the same formula and
-the same bench number that found the problem, but the new constant itself has
-not been scoped yet; expect to come back and refine it once it is.
+**Re-measured on hardware, Pi master, Pi off B and N3 off A: FL/RL mean 400 us,
+standard deviation 184.9 us**, inside the 1 ms checkoff limit (was 1.966 ms).
+Measured together with the receive-silence link detector below, which made
+single link pulls produce exactly one entry with no flapping. Still to run:
+checkoff step 9, the same relayed sync with an STM32 as master.
 
 | # | Task | Where | Done when |
 |---|---|---|---|
