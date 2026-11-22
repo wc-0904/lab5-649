@@ -943,6 +943,32 @@ Added to `src/raft_agent.c`:
   log and every matchIndex to zero, because a new leader knows nothing about
   what its followers hold.
 
+**The term ran away to 110 on the bench, and the election was not the cause.**
+The election at term 110 resolved in a single round: `standing`, one grant,
+`LEADER with 2 of 3 votes`. What drove the term up was a feedback loop, and the
+Pi's exit line named it: `refs=1946 appends=583 skipped=1567`. The cockpit was
+skipping eighty percent of its REF deadlines, so followers timed out and
+elected, which raised the term, which produced more traffic, which slowed the
+cockpit further.
+
+Two causes, both of them things the C leader path was missing that the Pi's had:
+
+- **No duplicate suppression on client requests.** The Pi keeps `client_seen` so
+  a repeated request is answered again rather than appended again. The C
+  `raft_on_client_request()` written tonight had none, and every request arrives
+  two to four times as a matter of course, once per bus plus relayed copies, with
+  the client retrying every 200 ms until answered. So an STM32 leader appended
+  the same `CANLINK_steering_1_UP` repeatedly, the log filled with duplicates,
+  and every follower truncated and re-stored on every round. `client_answered`,
+  `client_request` and `client_index` now hold the last answer per node, cleared
+  in `become_leader()` because a request outstanding across a leadership change
+  has to be appended once in the new term.
+- **The refusal line was printed from the dispatch thread on every append.** At
+  115200 baud a console line takes about four milliseconds, so a leader whose log
+  had diverged left the dispatch thread unable to drain the receive queue,
+  precisely when it most needed draining. Rate limited to one a second, like the
+  reference gap report.
+
 Still to do in P10: the held events and replay-exactly-once behaviour of
 checkoff step 7, and `COCKPIT_OK`/`COCKPIT_ERROR`.
 

@@ -91,6 +91,7 @@ static struct {
 	uint32_t missed;
 	int64_t last_ref_ms;
 	int64_t last_gap_report_ms;
+	int64_t last_reject_report_ms;
 	struct lab5_ref last;
 	uint64_t last_local_us;
 	struct raft_log log;
@@ -120,6 +121,16 @@ static struct {
 	uint32_t next_index[LAB5_CFG_N + 1];
 	uint32_t match_index[LAB5_CFG_N + 1];
 	int64_t last_append_ms;
+	/*
+	 * The last client request answered for each node, so a duplicate is
+	 * answered again rather than appended again. Both buses carry every
+	 * request, a relay can add more copies, and an unanswered client retries
+	 * every CLIENT_RETRY_MS, so the same event reaches the leader several
+	 * times as a matter of course.
+	 */
+	uint16_t client_request[LAB5_CFG_N + 1];
+	uint16_t client_index[LAB5_CFG_N + 1];
+	bool client_answered[LAB5_CFG_N + 1];
 } state;
 static struct k_spinlock state_lock;
 
@@ -136,6 +147,7 @@ void raft_agent_init(void)
 	for (int node = 1; node <= LAB5_CFG_N; node++) {
 		state.next_index[node] = 1;
 		state.match_index[node] = 0;
+		state.client_answered[node] = false;
 	}
 	raft_log_init(&state.log);
 	network_reset(&state.net);
@@ -420,6 +432,13 @@ static void become_leader(void)
 	for (int node = 1; node <= LAB5_CFG_N; node++) {
 		state.next_index[node] = raft_log_last_index(&state.log) + 1;
 		state.match_index[node] = 0;
+		/*
+		 * Forget what the previous leader answered. A request still
+		 * outstanding when the leadership moved has to be appended once
+		 * in the new term, and the old leader's index for it means
+		 * nothing here.
+		 */
+		state.client_answered[node] = false;
 	}
 }
 
@@ -588,16 +607,31 @@ void raft_on_client_request(const uint8_t data[8], int from)
 
 	reply.request = request.request;
 	reply.node = (uint8_t)from;
-	if (state.role == RAFT_LEADER) {
-		uint32_t index = raft_log_append(&state.log, (uint8_t)state.term,
-						 request.event);
+	if (state.role == RAFT_LEADER && from >= 1 && from <= LAB5_CFG_N) {
+		uint32_t index;
 
-		state.match_index[LAB_NODE_ID] = index;
+		if (state.client_answered[from] &&
+		    state.client_request[from] == request.request) {
+			/*
+			 * Already recorded. Answer again with the same index
+			 * rather than appending a second copy: appending it
+			 * would grow the log without bound, since every
+			 * follower then truncates and re-stores on each round.
+			 */
+			index = state.client_index[from];
+		} else {
+			index = raft_log_append(&state.log, (uint8_t)state.term,
+						request.event);
+			state.client_request[from] = request.request;
+			state.client_index[from] = (uint16_t)index;
+			state.client_answered[from] = true;
+		}
+		state.match_index[LAB_NODE_ID] = raft_log_last_index(&state.log);
 		reply.result = LAB5_REPLY_COMMITTED;
 		reply.leader = (uint8_t)LAB_NODE_ID;
 		reply.index = (uint16_t)index;
 		answer = true;
-	} else if (state.leader != 0) {
+	} else if (state.role != RAFT_LEADER && state.leader != 0) {
 		/* A client that reached a follower is redirected, not ignored. */
 		reply.result = LAB5_REPLY_REDIRECT;
 		reply.leader = (uint8_t)state.leader;
@@ -852,8 +886,10 @@ void raft_on_append(const uint8_t data[8])
 	uint32_t stored = 0;
 	bool advanced = false;
 	bool grew = false;
+	bool report_reject = false;
 	enum raft_append_result result;
 	char line[NETWORK_PRINT_SIZE];
+	int64_t now = k_uptime_get();
 
 	k_spinlock_key_t key = k_spin_lock(&state_lock);
 
@@ -867,7 +903,7 @@ void raft_on_append(const uint8_t data[8])
 	}
 	/* Contact from a leader at or above our term holds the election off. */
 	if (header.term >= state.term) {
-		state.last_contact_ms = k_uptime_get();
+		state.last_contact_ms = now;
 	}
 	uint32_t before = raft_log_last_index(&state.log);
 
@@ -888,6 +924,19 @@ void raft_on_append(const uint8_t data[8])
 		}
 	}
 	committed = state.commit_index;
+	/*
+	 * Rate limit the refusal line. This runs in the dispatch thread, and a
+	 * console line at 115200 baud takes about four milliseconds, so a
+	 * refusal printed on every append leaves that thread unable to drain
+	 * the receive queue. A leader whose log has diverged refuses on every
+	 * round, which is exactly when the queue most needs draining.
+	 */
+	if (result != RAFT_APPEND_ACCEPTED) {
+		report_reject = now - state.last_reject_report_ms >= GAP_REPORT_MS;
+		if (report_reject) {
+			state.last_reject_report_ms = now;
+		}
+	}
 	ack.term = (uint8_t)state.term;
 	ack.match_index = (uint16_t)match;
 	ack.result = (uint8_t)result;
@@ -914,7 +963,7 @@ void raft_on_append(const uint8_t data[8])
 	}
 	if (advanced) {
 		printk("raft: commit idx=%u %s\n", committed, line);
-	} else if (result != RAFT_APPEND_ACCEPTED) {
+	} else if (result != RAFT_APPEND_ACCEPTED && report_reject) {
 		printk("raft: append rejected result=%d prev=%u match=%u\n",
 		       (int)result, header.prev_index, match);
 	}
