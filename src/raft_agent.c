@@ -393,6 +393,21 @@ static void adopt_term(uint32_t term)
 	state.leader = 0;
 	state.voted_for = 0;
 	state.votes = 0;
+	/*
+	 * Anything this node put in the log under the old term may be gone: a
+	 * new leader's log wins, and entries written under an earlier term are
+	 * overwritten. Re-assert this node's own existence and links through
+	 * whoever leads now. Without this a node that was leading when it lost
+	 * the term never reappears in the graph, which showed on the bench as a
+	 * committed `nodes=CS.` with the drivetrain missing for good.
+	 *
+	 * Re-reporting is free when nothing changed, because the leader answers
+	 * a repeated request without appending a second copy.
+	 */
+	state.self_reported = false;
+	for (int bus = 0; bus < 2; bus++) {
+		state.link_down[bus] = true;
+	}
 }
 
 /** @brief Report whether a candidate's log is at least as current as ours.
