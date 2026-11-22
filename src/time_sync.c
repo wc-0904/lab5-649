@@ -162,6 +162,41 @@ void time_sync_reset(void)
 	k_spin_unlock(&lock, key);
 }
 
+/** @brief Become the timeline's origin, using this node's own clock.
+ *
+ * A leader receives no reference, so nothing ever locks its estimate. That is
+ * harmless for a node that led before it followed, because it keeps the
+ * timeline it already had, which is what makes a handover seamless. It is not
+ * harmless for a node elected without ever having synchronized: everything
+ * downstream is gated on the lock, so it would emit no pulse per second and no
+ * global time at all. That is checkoff step 8's cold start, where an STM32
+ * leads from boot with no cockpit present.
+ *
+ * Declaring itself the origin costs nothing a follower would have had: the
+ * ratio is exactly one because there is no other clock to measure against, and
+ * the delay is zero because the frame never crossed a bus.
+ * @param master_us The clock this node will publish as the master.
+ * @param now_cycles Counter reading taken at the same instant.
+ */
+void time_sync_assume_master(uint64_t master_us, uint32_t now_cycles)
+{
+	k_spinlock_key_t key = k_spin_lock(&lock);
+
+	if (!state.locked) {
+		state.base_us = master_us;
+		state.last_master_us = master_us;
+		state.last_cycles = now_cycles;
+		state.anchor_master_us = master_us;
+		state.anchor_cycles = now_cycles;
+		state.have_last = true;
+		state.have_anchor = true;
+		state.locked = true;
+		state.ratio = TIME_SYNC_RATIO_ONE;
+		state.correction_us = 0;
+	}
+	k_spin_unlock(&lock, key);
+}
+
 /** @brief Apply one reference message.
  * @param master_us Leader clock carried by the frame.
  * @param local_cycles Cycle counter captured when the frame was received.

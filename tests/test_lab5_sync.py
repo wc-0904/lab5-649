@@ -64,8 +64,23 @@ int main(void)
 		unsigned long long master_us;
 		unsigned long cycles;
 
-		if (sscanf(line, "%llu %lu", &master_us, &cycles) != 2) {
+		if (line[0] != 'a' &&
+		    sscanf(line, "%llu %lu", &master_us, &cycles) != 2) {
 			return 1;
+		}
+		if (line[0] == 'a') {
+			unsigned long long at;
+			unsigned long when;
+
+			if (sscanf(line + 1, "%llu %lu", &at, &when) != 2) {
+				return 1;
+			}
+			time_sync_assume_master(at, (uint32_t)when);
+			printf("%llu %d %d %d\n",
+			       (unsigned long long)time_sync_global_us((uint32_t)when),
+			       (int)time_sync_ratio(), (int)time_sync_correction_us(),
+			       time_sync_locked() ? 1 : 0);
+			continue;
 		}
 		time_sync_on_ref(master_us, (uint32_t)cycles);
 		printf("%llu %d %d %d\n",
@@ -100,13 +115,18 @@ class TimeSyncTests(unittest.TestCase):
         """Drop the build directory."""
         cls.tmp.cleanup()
 
-    def c_run(self, refs):
+    def c_run(self, refs, assume=None):
         """Feed a reference sequence to the C implementation.
 
         :param refs: Sequence of (master_us, cycles) pairs.
+        :param assume: Optional (master_us, cycles) declared as the origin
+            after the sequence, which adds one trailing row and must change
+            nothing when the module is already locked.
         :return: List of (global_us, ratio, correction_us, locked) per reference.
         """
         feed = "".join("%d %d\n" % pair for pair in refs)
+        if assume is not None:
+            feed += "a %d %d\n" % assume
         result = subprocess.run([str(self.binary)], input=feed, capture_output=True,
                                 text=True, check=True)
         rows = []
@@ -114,6 +134,15 @@ class TimeSyncTests(unittest.TestCase):
             values = [int(value) for value in line.split()]
             rows.append((values[0], values[1], values[2], bool(values[3])))
         return rows
+
+    def c_run_assume(self, master_us, cycles):
+        """Declare the origin with no references at all.
+
+        :param master_us: Clock to publish as the master.
+        :param cycles: Counter reading at the same instant.
+        :return: One row, as c_run returns them.
+        """
+        return self.c_run([], assume=(master_us, cycles))
 
     def py_run(self, refs):
         """Feed the same sequence to the Pi implementation.
@@ -260,6 +289,32 @@ class TimeSyncTests(unittest.TestCase):
         rows = self.c_run(moved)
         self.assertEqual(rows[-1][0], last_master - 5000000 + DELAY_US)
         self.assertEqual(rows, self.py_run(moved))
+
+    def test_a_leader_can_declare_itself_the_origin(self):
+        """A leader receives no reference, so nothing would ever lock it.
+
+        Harmless for a node that led after following, which keeps the timeline
+        it already had. Not harmless for one elected without ever having
+        synchronized: everything downstream is gated on the lock, so it would
+        emit no pulse per second and no global time. That is checkoff step 8's
+        cold start with an STM32 leading from boot.
+        """
+        rows = self.c_run_assume(2000000000000000, 0)
+        self.assertTrue(rows[0][3])
+        self.assertEqual(rows[0][1], RATIO_ONE)
+        # No delay is added: the frame never crossed a bus.
+        self.assertEqual(rows[0][0], 2000000000000000)
+
+    def test_declaring_the_origin_does_not_disturb_an_existing_timeline(self):
+        """A node that led after following must keep what it had, or the
+        handover steps and checkoff step 6's 100 us bound is missed.
+        """
+        refs = self.sequence(80, 90, 0, seed=31)
+        rows = self.c_run(refs, assume=(1, 0))
+        # The trailing row is the refused declaration; the ratio it reports
+        # must be the one the references established.
+        self.assertEqual(rows[-1][1], rows[-2][1])
+        self.assertTrue(rows[-1][3])
 
     def test_absurd_interval_is_rejected(self):
         """A sample more than one percent off is noise, not drift, so it is dropped."""

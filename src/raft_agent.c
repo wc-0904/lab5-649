@@ -872,11 +872,16 @@ void raft_on_vote(const uint8_t data[8], int from)
 		return;
 	}
 	/*
-	 * The time master moves with the leadership. Nothing is reset here: the
-	 * global estimate this node has been maintaining all along is what it
-	 * now stamps into REF, which is why the handover does not step the
-	 * timeline. See TASKS.md, settled decisions.
+	 * The time master moves with the leadership. Nothing is reset for a
+	 * node that was already synchronized: the estimate it has maintained
+	 * all along is what it now stamps into REF, which is why a handover
+	 * does not step the timeline. A node elected without ever having
+	 * synchronized has no estimate to keep, so it declares itself the
+	 * origin instead; otherwise the lock never happens and it emits no
+	 * pulse per second at all.
 	 */
+	time_sync_assume_master(LAB5_EPOCH_US + (uint64_t)k_uptime_get() * 1000U,
+				pps_now());
 	if (LAB5_CFG_DEBUG) {
 		printk("raft: LEADER term=%u with %d of %d votes\n", term, count,
 		       LAB5_CFG_N);

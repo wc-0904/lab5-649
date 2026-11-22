@@ -45,6 +45,15 @@ uint32_t time_sync_delay_us(void);
  * @param hz Ticks per second.
  */
 void time_sync_set_tick_hz(uint32_t hz);
+/** @brief Become the timeline's origin, using this node's own clock.
+ *
+ * For a leader elected without ever having synchronized. A node that led after
+ * following keeps the timeline it already had, which is what makes a handover
+ * seamless, so this does nothing when already locked.
+ * @param master_us The clock this node will publish as the master.
+ * @param now_cycles Counter reading taken at the same instant.
+ */
+void time_sync_assume_master(uint64_t master_us, uint32_t now_cycles);
 /** @brief Forget any master and return to the unsynchronized state. */
 void time_sync_reset(void);
 /** @brief Apply one reference message.

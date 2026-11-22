@@ -1249,6 +1249,24 @@ Eight tests pin the identifier scheme on both endpoints, including that a
 relayed copy loses arbitration, does not collide with the Lab 3 catalog, stays
 inside eleven bits, and is not mistaken for an original by the consensus mask.
 
+**Bench run found an unrelated bug, now fixed: a leader elected without ever
+having synchronized emitted no PPS at all.** N2 booted with no cockpit present,
+won an election, and printed `sync: no lock yet, ref=0` for ever with no `pps:`
+lines. A leader receives no reference, so nothing locks its estimate, and
+everything downstream is gated on that lock: `arm_next_edge()` refuses to arm
+and `raft_ref_tx()` falls back to the epoch plus uptime.
+
+It had worked until now purely by accident, because every STM32 that became
+leader had locked as a follower first. That is exactly checkoff step 8's cold
+start with `LEADER=random` and no cockpit.
+
+`time_sync_assume_master()` lets such a node declare itself the timeline's
+origin: ratio exactly one, because there is no other clock to measure against,
+and zero delay, because the frame never crossed a bus. It does nothing when the
+module is already locked, so a node that led *after* following keeps the
+timeline it already had, which is what makes a handover seamless and keeps
+checkoff step 6's 100 microsecond bound reachable. Two tests cover both halves.
+
 Still to do: 11.3, the bench work, where the open question is whether a node
 reachable only by relay still holds FL and RL within 1 ms. The relay adds a
 queue hop and a transmit worker to the reference path, which shifts that node's
