@@ -541,6 +541,14 @@ class RaftAgent:
                 self.commit_index = target
                 self.net.replay(self.log, self.commit_index)
                 self.show_new_entries()
+                if self.config["Debug"]:
+                    # The same line the firmware prints, so the three consoles
+                    # can be compared character for character. Checkoff step 4
+                    # and every demo scenario ask for getNetwork() on every
+                    # node, and a following cockpit printed only its event
+                    # stream, never its own graph.
+                    print("raft: commit idx=%d %s"
+                          % (self.commit_index, self.net.render()), flush=True)
         if stepped_down and self.config["Debug"]:
             print("raft: stepping down, term=%d leader is elsewhere" % self.term,
                   flush=True)

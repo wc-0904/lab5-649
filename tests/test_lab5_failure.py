@@ -181,5 +181,52 @@ class ReplayDisplayTests(unittest.TestCase):
         self.assertEqual(h.agent.replay_until, 5)
 
 
+class GraphVisibilityTests(unittest.TestCase):
+    """Every node must be able to show getNetwork(), whatever its role.
+
+    Checkoff step 4 and all three demo scenarios compare the committed graph
+    across the three consoles. A following cockpit printed only its event
+    stream and never its own graph, so there was nothing on it to compare.
+    """
+
+    def setUp(self):
+        """Load the real cluster configuration."""
+        self.config = load(ROOT / "config" / "cluster.conf")
+
+    def capture(self, fn):
+        """Run something and return what it printed.
+
+        :param fn: Callable taking no arguments.
+        :return: Captured stdout.
+        """
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            fn()
+        return buffer.getvalue()
+
+    def test_a_following_node_prints_its_committed_graph(self):
+        """The line a TA reads off the console."""
+        h = Harness(1, self.config)
+        output = self.capture(lambda: h.agent.on_append(
+            append_encode(9, 0, 0, 1, 1, 9, event_node(2, True))))
+        self.assertIn("commit idx=1", output)
+        self.assertIn("net nodes=", output)
+
+    def test_the_line_matches_the_firmware_format(self):
+        """Compared character for character across three consoles."""
+        h = Harness(1, self.config)
+        h.agent.on_append(append_encode(9, 0, 0, 1, 1, 9, event_node(2, True)))
+        self.assertRegex(h.agent.net.render(),
+                         r"^net nodes=[CSD.]{3} links=[12.]{6} mode=(OK|FAIL)$")
+
+    def test_the_graph_is_not_printed_when_nothing_commits(self):
+        """An empty heartbeat append must not spam the console."""
+        h = Harness(1, self.config)
+        h.agent.on_append(append_encode(9, 0, 0, 0))
+        output = self.capture(lambda: h.agent.on_append(
+            append_encode(9, 0, 0, 0)))
+        self.assertNotIn("commit idx=", output)
+
+
 if __name__ == "__main__":
     unittest.main()
