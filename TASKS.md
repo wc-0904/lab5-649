@@ -689,7 +689,39 @@ rather than hundreds of microseconds.
 | 7.4 | Scope all three PPS pins, record the spread | bench | A capture worth putting in the report |
 | 7.5 | Iterate on **D17** and **D20** against the measured spread | as above | The spread stops improving. This is where the 13 points are earned |
 
-### P8. Blinkers on global time, checkoff step 3  [WRITTEN, not yet on hardware]
+### P8. Blinkers on global time, checkoff step 3  [DONE, measured 2026-11-22]
+
+**Measured: FL on N2 against RL on N3, mean 2.5 us, standard deviation 3.05 us**
+over ten edges. Checkoff step 3 allows 1 ms, so this passes by about 400 times.
+The TIM5 compare upgrade noted below as a fallback is not needed.
+
+**That result revealed a mistake in the P7 analysis.** The blinkers are driven by
+a thread sleeping to a deadline; PPS is driven by a hardware comparator. The
+software path beat the hardware path by six times, which should not happen. The
+reason is the length of the extrapolation, not the delivery mechanism:
+
+| Path | Armed how far ahead | Ratio error over that span | Measured |
+|---|---|---|---|
+| PPS | ~990 ms, from the falling edge | 15.1 us | 19.5 us |
+| Blink | ~20 ms, re-entered each edge | 0.3 us | 3.05 us |
+
+One LSB of the Q16.16 ratio is 15.26 ppm. Multiplied by a one second
+extrapolation that is 15.1 us, which accounts for essentially the whole measured
+PPS spread. **So the 19.5 us is ratio error through a long lever arm, not
+receive timestamp jitter**, which is what P7 recorded and what D17 was closed
+against. D17 is still closed, since the jitter is evidently smaller than
+believed, but the reasoning in the P7 section was wrong about the cause.
+
+Two consequences, neither urgent since both figures already pass:
+
+- **`TIME_SYNC_RATIO_SHIFT` 16 to 24 is not cosmetic.** It was parked as
+  improving only the reported drift number. Ratio quantization lands on the PPS
+  edge through the extrapolation, so finer resolution tightens the edge itself.
+- **Re-arming closer to the edge is the bigger lever.** Refining the compare
+  register from the 20 ms monitor task, for the second already chosen, would cut
+  the extrapolation from 990 ms to about 22 ms, a factor of 45, and should bring
+  PPS down to match the blinkers. About 20 lines, and it would hold regardless of
+  how noisy the ratio is.
 
 **D23 settled: the phase is a pure function of global time.**
 
