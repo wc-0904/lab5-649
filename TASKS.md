@@ -1126,6 +1126,22 @@ an older term is overwritten. The log it rejoins is effectively a new one.
 Nine tests cover both halves, including one entry per change rather than per
 observation, a follower recording nothing, and the replayed-then-live boundary.
 
+**First bench run, 2026-11-22: both work.** A leading STM32 appended
+`COCKPIT_ERROR`, failure mode propagated, and every commit line walked
+`mode=FAIL` and back to `mode=OK` when `COCKPIT_OK` landed at index 8. The
+returning cockpit printed its held event marked `replayed` and then live events
+unmarked. That is checkoff step 7's display requirement.
+
+**One bug the run exposed: a leader transmitted its own client reports.**
+`raft_client_poll()` always put the request on the bus, and a node does not
+receive its own frames, so a leader's own request never reached its own
+handler. A follower picked it up, saw it was not leading, and correctly
+redirected to the node that had sent it, which produced an endless
+`redirected to steering, retrying req=1` on steering's own console while
+steering was the leader. The leader now records its own reports directly, which
+is what the Pi's `client_report()` already did. Another instance of the pattern:
+a rule the Pi had and the firmware did not.
+
 | # | Task | Where | Done when |
 |---|---|---|---|
 | 10.1 | `COCKPIT_OK` and `COCKPIT_ERROR` entries and their effect | `raft_agent.c`, `network_state.c` | Enter and leave failure mode from the log |

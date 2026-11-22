@@ -1080,6 +1080,8 @@ void raft_client_poll(int64_t now_ms)
 	uint8_t event = RAFT_EVENT_NONE;
 	uint16_t request = 0;
 	bool retry = false;
+	uint32_t local = 0;
+	uint8_t recorded = RAFT_EVENT_NONE;
 
 	k_spinlock_key_t key = k_spin_lock(&state_lock);
 
@@ -1137,8 +1139,29 @@ void raft_client_poll(int64_t now_ms)
 		request = state.pending_request;
 		retry = true;
 	}
+	if (event != RAFT_EVENT_NONE && state.role == RAFT_LEADER) {
+		/*
+		 * This node is the leader, so it records its own report rather
+		 * than transmitting it. A node does not receive its own frames,
+		 * so a request put on the bus by the leader never reaches the
+		 * leader's own handler: a follower picks it up, sees it is not
+		 * leading, and correctly redirects to the node that sent it.
+		 * On the bench that produced an endless "redirected to
+		 * steering, retrying req=1" on steering's own console while
+		 * steering was the leader.
+		 */
+		local = raft_log_append(&state.log, (uint8_t)state.term, event);
+		recorded = event;
+		state.match_index[LAB_NODE_ID] = raft_log_last_index(&state.log);
+		state.pending_event = RAFT_EVENT_NONE;
+		event = RAFT_EVENT_NONE;
+	}
 	k_spin_unlock(&state_lock, key);
 
+	if (local != 0 && LAB5_CFG_DEBUG) {
+		printk("raft: append idx=%u term=%u %s\n", local, raft_term(),
+		       raft_event_name(recorded));
+	}
 	if (event != RAFT_EVENT_NONE) {
 		send_client_request(event, request, retry);
 	}
