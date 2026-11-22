@@ -717,11 +717,14 @@ Two consequences, neither urgent since both figures already pass:
 - **`TIME_SYNC_RATIO_SHIFT` 16 to 24 is not cosmetic.** It was parked as
   improving only the reported drift number. Ratio quantization lands on the PPS
   edge through the extrapolation, so finer resolution tightens the edge itself.
-- **Re-arming closer to the edge is the bigger lever.** Refining the compare
-  register from the 20 ms monitor task, for the second already chosen, would cut
-  the extrapolation from 990 ms to about 22 ms, a factor of 45, and should bring
-  PPS down to match the blinkers. About 20 lines, and it would hold regardless of
-  how noisy the ratio is.
+- **Re-arming closer to the edge is the bigger lever. Done 2026-11-22**:
+  `pps_refine()` rewrites the compare register from the 20 ms monitor task for
+  the second already chosen, cutting the extrapolation from 990 ms to about
+  22 ms. Holding the module lock masks the timer interrupt on this part, so the
+  phase check and the compare write cannot be interleaved by the edge they are
+  scheduling, and a 2 ms guard keeps a refinement from ever writing a value the
+  counter has passed, which would cost a full 32 bit wrap of 71 minutes.
+  Not yet measured on hardware.
 
 **D23 settled: the phase is a pure function of global time.**
 
@@ -838,8 +841,43 @@ vote only counts for the candidate it names, a node votes once per term but will
 re-grant to the same candidate so a lost vote is recoverable, and granting holds
 off the voter's own election. 147 host tests pass in total.
 
-Still to do: the bench work, which is where `LAB5_DELAY_STM32_US` stops being a
-guess, and the Pi rejoining as a follower, which belongs to P10.
+**First bench run, 2026-11-22: the election works.** With the cockpit killed, N2
+and N3 both reported `lost SYNC, no REF for 60 ms`, N3 stood in term 2, N2
+granted it, and N3 took the leadership with 2 of 3 votes inside a second. N2
+re-synced to drivetrain and the hazards went from 2 Hz to 4 Hz on both boards,
+which is the other half of checkoff step 6.
+
+Two observations from that run:
+
+- **`vote granted` appeared twice on N2**, one copy per bus. Re-granting to the
+  same candidate is deliberate: it is how a candidate recovers a lost vote.
+  Granting to a different candidate in the same term is what is forbidden.
+- **A leader's PPS spacing is exactly deterministic.** Once N3 was leading it
+  received no reference, so its base and ratio froze and consecutive edges came
+  999985 microseconds apart, every time. That is 1000000 / (1 + 15e-6) with its
+  reported ratio of 15 ppm, which is the drift arithmetic checking out to the
+  microsecond against a completely independent path.
+
+**The handover step is not yet a clean number.** Careful which interval holds it:
+the compare is armed at the falling edge, so the edge after the handover was
+already scheduled under the old master and the *second* one is the first armed
+under the new one. On N2 that interval came out 175 microseconds short, but the
+baseline scatter on neighbouring intervals was already plus or minus 150, so one
+sample cannot separate a step from noise and no claim against the 100 microsecond
+bound is made yet. `pps_refine()` is the prerequisite: with the lever arm cut the
+scatter should fall to single digits and the step becomes readable. Then repeat
+the handover five or six times and tabulate the first post-handover interval.
+
+One encouraging sign: had the delay stayed at the Pi's 658 microseconds, the step
+would have been about 260 in a consistent direction. Nothing that large appeared,
+so the per master delay is doing its job and 400 is in the right neighbourhood.
+
+Still to do: the handover step measurement above, and the Pi rejoining as a
+follower, which belongs to P10. **The Pi currently cannot step down**: it has
+`on_ref` and can vote, but no `on_append`, so nothing makes it adopt a higher
+term, and restarting the cockpit after an election produces two nodes both
+believing they lead and both transmitting REF. That is checkoff step 7 and is
+the first thing P10 has to fix.
 
 | # | Task | Where | Done when |
 |---|---|---|---|

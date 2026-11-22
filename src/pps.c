@@ -32,6 +32,14 @@
 #define PPS_ARM_GUARD_US 2000U
 /** @brief Microseconds in one second, the PPS period. */
 #define PPS_PERIOD_US 1000000U
+/** @brief Closest to the edge that a refinement may still rewrite the compare.
+ *
+ * Writing a compare value the counter has already passed costs a full 32 bit
+ * wrap, about 71 minutes, so the refinement stops well before the deadline. Two
+ * milliseconds is a hundred monitor periods' worth of margin and leaves the
+ * lever arm at roughly one heartbeat, which is all that was wanted.
+ */
+#define PPS_REFINE_GUARD_US 2000U
 
 static TIM_TypeDef *const timer = (TIM_TypeDef *)DT_REG_ADDR(PPS_TIMER);
 static const struct stm32_pclken pclken[] = STM32_DT_CLOCKS(PPS_TIMER);
@@ -161,6 +169,41 @@ static void pps_isr(const void *arg)
 		LL_TIM_DisableIT_CC1(timer);
 		state.running = false;
 	}
+}
+
+/** @brief Recompute the armed deadline from a fresher reference.
+ *
+ * Holding the lock masks the timer interrupt on this part, so the phase check
+ * and the compare write cannot be interleaved by the edge they are about to
+ * schedule.
+ */
+void pps_refine(void)
+{
+	k_spinlock_key_t key = k_spin_lock(&lock);
+	uint32_t now;
+	uint64_t global_now;
+	int64_t ahead_us;
+	int64_t local_ahead;
+
+	/* Only while waiting for a rising edge that has already been chosen. */
+	if (!state.ready || !state.running || state.pin_high ||
+	    !time_sync_locked()) {
+		k_spin_unlock(&lock, key);
+		return;
+	}
+	now = pps_now();
+	global_now = time_sync_global_us(now);
+	if (global_now == 0 || global_now >= state.edge_global_us) {
+		/* Past the target already; leave the armed value alone. */
+		k_spin_unlock(&lock, key);
+		return;
+	}
+	ahead_us = (int64_t)(state.edge_global_us - global_now);
+	local_ahead = (ahead_us << TIME_SYNC_RATIO_SHIFT) / time_sync_ratio();
+	if (local_ahead >= PPS_REFINE_GUARD_US) {
+		LL_TIM_OC_SetCompareCH1(timer, now + (uint32_t)local_ahead);
+	}
+	k_spin_unlock(&lock, key);
 }
 
 /** @brief Collect the most recent edge, once.

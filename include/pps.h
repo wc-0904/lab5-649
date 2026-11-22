@@ -42,6 +42,23 @@ bool pps_ready(void);
  * running from the first edge.
  */
 void pps_start(void);
+/** @brief Recompute the armed deadline from a fresher reference.
+ *
+ * Called periodically from a thread. The edge is first armed from the falling
+ * edge of the previous pulse, nearly a second ahead, and any error in the drift
+ * ratio is multiplied by that whole second: one LSB of the Q16.16 ratio is
+ * 15.26 ppm, which over 990 ms is 15 microseconds, and that accounted for
+ * essentially all of the 19.5 microsecond spread first measured between the two
+ * Nucleos. The blink task, which re-enters its deadline sleep within 20 ms of
+ * every edge, measured six times better on the same clock, which is what
+ * identified the cause.
+ *
+ * Rewriting the compare register from a reference at most one heartbeat old
+ * shortens that lever arm from about 990 ms to about 22 ms. Nothing else
+ * changes: the same second is still targeted and the edge is still produced by
+ * the comparator.
+ */
+void pps_refine(void);
 /** @brief Count edges emitted since boot.
  * @return Edge count.
  */
