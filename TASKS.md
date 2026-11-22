@@ -562,7 +562,35 @@ the only reference for absolute offset is PPS edge spread. P7 has to fix it.
 | 6.5 | `global_gettime()`, maintained continuously on every node | `time_sync.c` | Returns a corrected global time on leader and followers alike |
 | 6.6 | Periodic task printing the drift error being corrected | `lab_tasks.c` | Visible on all three consoles |
 
-### P7. PPS output  [STM32 half written and building, never flashed or scoped]
+### P7. PPS output  [STM32 half DONE and measured 2026-11-21; Pi half open]
+
+**Measured: mean 9.14 us, standard deviation 19.48 us**, over ten consecutive
+edges with the cockpit running two minutes, N2 against N3 on A0 with grounds
+tied. Checkoff step 3 allows 1 ms between FL and RL and those run off this same
+clock, so there is roughly 50 times the margin needed. Task 7.5 says to iterate
+until the spread stops improving; it already has, relative to anything that
+matters, so D17 is closed at the receive callback.
+
+Three things to state carefully in the report:
+
+- **`DELAY_US` was not validated and cannot be by this measurement.** An error in
+  `d` common to both nodes shifts both edges equally and cancels exactly in a node
+  to node comparison. What the 9.14 us mean bounds is the *asymmetry* between the
+  two boards. It is also not statistically distinguishable from zero: the standard
+  error of the mean over ten samples is 19.48/sqrt(10) = 6.16 us, so 9.14 is 1.5
+  sigma. The constant stays at 300 and is left as a calculation, not a measurement.
+  Absolute accuracy would need an external time reference the bench does not have.
+- **The jitter came in better than P6 predicted**, 19.5 us against about 50. The
+  difference is the common mode component: a REF the Pi stamps and then delivers
+  late moves both nodes' edges together, so it largely cancels in the difference.
+  What survives is only the uncorrelated part of each node's receive path. The
+  earlier per node observation of 465 us excursions appearing on both boards at
+  once is the same effect seen from the other side.
+- **The free running experiment is worth half a minute of bench time.** Scope the
+  spread with the cockpit up, stop the cockpit, and watch the gap walk apart
+  linearly at the relative crystal rate, tens of microseconds per second. Restart
+  and it pulls back together. That is a direct demonstration of what the
+  synchronization buys and is hard to argue with in a report.
 
 Settled here, subject to what the scope says:
 
