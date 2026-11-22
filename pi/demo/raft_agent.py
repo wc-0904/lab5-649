@@ -773,8 +773,18 @@ class RaftAgent:
         :param now: Monotonic time from the caller's loop.
         """
         if self.pending_event is not None:
-            self.client_poll(now)
-            return
+            if self.is_leader():
+                # Won the leadership with a request still outstanding. Record
+                # it directly: there is nobody left to send it to, and leaving
+                # it pending deadlocks the queue behind it, because client_poll
+                # declines to retry once this node leads. On the bench that
+                # left the cockpit absent from its own graph, as nodes=.SD,
+                # while it was the leader.
+                self.client_append(self.pending_event)
+                self.pending_event = None
+            else:
+                self.client_poll(now)
+                return
         if self.self_events and self.client_report(self.self_events[0], now):
             self.self_events.pop(0)
 

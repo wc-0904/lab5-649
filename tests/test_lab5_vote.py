@@ -585,6 +585,53 @@ class ZombieLeaderTests(unittest.TestCase):
         self.assertEqual(h.agent.match_index[3], 0)
 
 
+class PendingRequestOnPromotionTests(unittest.TestCase):
+    """Winning the leadership with a request outstanding must not deadlock.
+
+    client_tick() defers to client_poll() whenever something is pending, and
+    client_poll() declines to retry once this node leads, so a request left
+    outstanding across a promotion blocked the queue behind it for ever. On the
+    bench that left the cockpit absent from its own graph, nodes=.SD, while it
+    was the leader.
+    """
+
+    def setUp(self):
+        """Load the real cluster configuration."""
+        self.config = load(ROOT / "config" / "cluster.conf")
+
+    def test_a_pending_request_is_recorded_on_promotion(self):
+        """There is nobody left to send it to, so the leader records it."""
+        h = Harness(2, self.config)
+        h.agent.client_tick(0.0)
+        self.assertIsNotNone(h.agent.pending_event)
+        pending = h.agent.pending_event
+        h.agent.role = LEADER
+        h.agent.leader = 2
+        h.agent.client_tick(1.0)
+        self.assertIsNone(h.agent.pending_event)
+        self.assertEqual(h.agent.log.get(1)[1], pending)
+
+    def test_the_queue_drains_after_the_promotion(self):
+        """The whole point: the entries behind it must still get in."""
+        h = Harness(2, self.config)
+        h.agent.client_tick(0.0)
+        h.agent.role = LEADER
+        h.agent.leader = 2
+        for tick in range(1, 6):
+            h.agent.client_tick(tick)
+        self.assertEqual(h.agent.self_events, [])
+        self.assertEqual(h.agent.log.last_index(), 3)
+
+    def test_a_follower_still_retries_rather_than_appending(self):
+        """A follower has no right to append; it must keep asking."""
+        h = Harness(2, self.config)
+        h.agent.client_tick(0.0)
+        h.sent.clear()
+        h.agent.client_tick(1.0)
+        self.assertEqual(h.agent.log.last_index(), 0)
+        self.assertEqual(len(h.sent), 1)
+
+
 class ReplicationProgressTests(unittest.TestCase):
     """A node that never acknowledges must not stall the others.
 
