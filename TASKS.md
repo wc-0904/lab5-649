@@ -1462,12 +1462,12 @@ on the edges when the jumpers were restored.
 | 11.2 | Buffer and retry across the convergence window, from **D25** | `lab_can.c` | Pull N1 off B and N3 off A: wheel still steers, blinks and brakes |
 | 11.3 | Relayed sync with an STM32 master, scenario (c) jumpers | all | SYNC stays on at the cut-off node, REF_RX still toggles, FL and RL within 1 ms |
 
-### P12. Isolation and test button, checkoff step 10
+### P12. Isolation and test button, checkoff step 10  [DONE, verified on hardware]
 
 Reuse the Lab 3 behavior and add the rule that the term changes only if the isolated
 node was leader, and exactly once.
 
-**Written, not yet on hardware.** Plain Raft broke the rule: an isolated
+**Verified on hardware.** Plain Raft broke the rule: an isolated
 follower stood every 60 to 99 ms, raising its term each time, and on
 reconnection its higher term made the leader step down. Now a node stands only
 if it heard any frame within `LAB5_ISOLATION_MS` (30 ms, under the 60 ms minimum
@@ -1488,7 +1488,7 @@ hears nothing for `LAB5_ISOLATED_RESET_MS` (600 ms) drops what it was holding,
 reports nothing while cut off, and on reconnection reports `NODE_X_UP` and then
 each link it hears, as at boot. Both triggers are local silence timers, not a
 comparison against the committed graph, which is what flooded the log in the
-reverted self-healing attempt. Not yet on hardware.
+reverted self-healing attempt. Verified on hardware.
 
 ### P13. Integration and demo rehearsal
 
